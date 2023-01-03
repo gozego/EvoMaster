@@ -25,9 +25,7 @@ jobs:
             args:
               - -xce
               - |
-                cd git-main
-                cd dotnet test
-                echo "WIP replace with actual implementation!"
+                echo "TEST"
             path: /bin/sh
         on_failure:
           do:
