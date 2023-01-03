@@ -1,5 +1,5 @@
 project_info:
-  - &git-main-branch-name main
+  - &git-main-branch-name SDET-666-EvoMaster-Enhancements
   - &git-uri git@github.com:gozego/EvoMaster.git
   - &slack-notify-url ((ci-utility-notices))
 
