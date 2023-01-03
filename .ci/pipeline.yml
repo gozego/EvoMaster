@@ -25,6 +25,8 @@ jobs:
             args:
               - -xce
               - |
+                cd git-main
+                ls
                 echo "TEST"
             path: /bin/sh
         on_failure:

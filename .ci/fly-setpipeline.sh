@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-fly --target utility set-pipeline -p EvoMaster -c .ci/pipeline.yml
+fly --target utility set-pipeline -p evo-master -c .ci/pipeline.yml
