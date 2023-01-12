@@ -1,48 +1,7 @@
 project_info:
-  - &git-main-branch-name SDET-666-EvoMaster-Enhancements
-  - &git-uri git@github.com:gozego/EvoMaster.git
+  - &git-repo git@github.com:gozego/EvoMaster.git
+  - &trigger-repo git@github.com:gozego/payments-public-api.git
   - &slack-notify-url ((ci-utility-notices))
-
-jobs:  
-  # Begin Job Definition - pull-request
-  - name: run-test-suite
-    public: false
-    plan:
-      # Get main branch
-      - get: git-main
-        trigger: false
-      - task: unit-test
-        config:
-          image_resource:
-            source:
-              repository: markhobson/maven-chrome
-              tag: latest
-            type: docker-image
-          inputs:
-            - name: git-main
-          platform: linux
-          run:
-            args:
-              - -xce
-              - |
-                cd git-main
-                ls
-                echo "TEST"
-            path: /bin/sh
-        on_failure:
-          do:
-            - put: notify
-              params:
-                alert_type: failed
-                message: Test Suite Run Failed!
-                mode: normal_with_info
-     
-      # Send success alert via slack
-      - put: notify
-        params:
-          alert_type: success
-          message: Pull Request Build complete
-          mode: normal_with_info
 
 resource_types:
   - name: slack-notifier
@@ -52,16 +11,70 @@ resource_types:
       tag: latest
 
 resources:
-  - name: git-main
+  - name: evomaster
     type: git
     icon: github
+    check_every: 5m
     source:
-      uri: *git-uri
-      branch: *git-main-branch-name
+      branch: SDET-666-EvoMaster-Enhancements
       private_key: ((git-private-key))
+      uri: *git-repo
+
+  - name: public-api
+    type: git
+    icon: github
+    check_every: 5m
+    source:
+      branch: master
+      private_key: ((git-private-key))
+      uri: *trigger-repo
 
   - name: notify
     type: slack-notifier
     icon: slack
     source:
       url: *slack-notify-url
+
+jobs:
+  - name: evomaster
+    plan:
+      - in_parallel:
+          fail_fast: true
+          steps:
+            - get: public-api
+              trigger: true
+              version: every
+            - get: evomaster
+              trigger: false
+
+      - task: generate-tests
+        config:
+          platform: linux
+#          image_resource:
+#            type: docker-image
+#            source:
+#              repository: maven
+#              tag: "3.6.3-jdk-8-slim"
+          inputs:
+            - name: evomaster
+          run:
+            path: sh
+            args:
+              - -xce
+              - |
+                cd evomaster
+                ls
+                ./getTestsForPublicApi.sh -i ((client-id)) -s ((client-secret)) -u https://public-api.paylease.net/graphql
+        on_failure:
+          do:
+            - put: notify
+              params:
+                alert_type: failed
+                message: Generating tests failed!
+                mode: normal_with_info
+      # Send success alert via Slack
+      - put: notify
+        params:
+          alert_type: success
+          message: Generating tests complete!
+          mode: normal_with_info

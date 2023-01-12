@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-fly --target utility login --team-name utility --concourse-url https://concourse.org.paylease.com
+fly --target sdet login --team-name sdet --concourse-url https://concourse.org.paylease.com
