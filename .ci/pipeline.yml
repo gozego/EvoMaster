@@ -1,6 +1,11 @@
+# Generates Automated API Tests via EvoMaster & pushes code to GitHub
+# Triggered by: public-api master commmits
+# Generated tests are run in: TODO TBD PIPELINE
+
 project_info:
   - &git-repo git@github.com:gozego/EvoMaster.git
   - &trigger-repo git@github.com:gozego/payments-public-api.git
+  - &tests-repo git@github.com:gozego/evomaster-tests.git
   - &slack-notify-url ((ci-utility-notices))
 
 resource_types:
@@ -29,6 +34,15 @@ resources:
       private_key: ((git-private-key))
       uri: *trigger-repo
 
+  - name: evomaster-tests
+    type: git
+    icon: github
+    check_every: 5m
+    source:
+      branch: main
+      private_key: ((git-private-key))
+      uri: *tests-repo
+
   - name: notify
     type: slack-notifier
     icon: slack
@@ -46,24 +60,33 @@ jobs:
               version: every
             - get: evomaster
               trigger: false
+            - get: evomaster-tests
+              trigger: false
 
+      # Autogenerate EvoMaster API tests (Still need to add some env vars/secrets)
       - task: generate-tests
         config:
           platform: linux
-#          image_resource:
-#            type: docker-image
-#            source:
-#              repository: python?
-#              tag: "TBD"
+          image_resource:
+            type: docker-image
+            source:
+              repository: maven
+              tag: "3.6.3-jdk-8-slim"
           inputs:
             - name: evomaster
+          outputs:
+            - name: evomaster/src
           run:
             path: sh
             args:
               - -xce
               - |
                 cd evomaster
-                ls
+                apt-get update
+                apt-get install -y --no-install-recommends python3-pip
+                apt-get install -y --no-install-recommends git
+                export TOKEN_URL=https://qa-test.paylease.net/testing/automated_helper/setup/Resident/Otp/setUpZegoResidentWithUnit
+                export API_TOKEN=https://public-api.paylease.net/oauth/token
                 ./getTestsForPublicApi.sh -i ((client-id)) -s ((client-secret)) -u https://public-api.paylease.net/graphql
         on_failure:
           do:
@@ -72,9 +95,54 @@ jobs:
                 alert_type: failed
                 message: Generating tests failed!
                 mode: normal_with_info
+
       # Send success alert via Slack
       - put: notify
         params:
           alert_type: success
           message: Generating tests complete!
+          mode: normal_with_info
+
+      # Copy new tests into repo
+      - task: commit-new-tests
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: gitea/gitea
+          inputs:
+            - name: evomaster-tests
+            - name: evomaster/src
+          outputs:
+            - name: evomaster-tests
+          run:
+            path: sh
+            args:
+              - -cx
+              - |
+                rm -r evomaster-tests/src/
+                cp -r evomaster/src/ evomaster-tests/src/
+                cd evomaster-tests
+                git config --global user.email "rlabossiere@gozego.com"
+                git add src
+                git commit -m "testing"
+        on_failure:
+          do:
+            - put: notify
+              params:
+                alert_type: failed
+                message: Copying tests to GitHub tests failed!
+                mode: normal_with_info
+
+      # Commit new code to GitHub
+      - put: evomaster-tests
+        params:
+          repository: evomaster-tests
+
+      # Send success alert via Slack
+      - put: notify
+        params:
+          alert_type: success
+          message: Copying tests to GitHub complete!
           mode: normal_with_info
