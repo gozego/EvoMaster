@@ -1,6 +1,6 @@
 # Generates Automated API Tests via EvoMaster & pushes code to GitHub
 # Triggered by: public-api master commmits
-# Generated tests are run in: TODO TBD PIPELINE
+# Generated tests are run in: evomaster-tests
 
 project_info:
   - &git-repo git@github.com:gozego/EvoMaster.git
@@ -127,6 +127,8 @@ jobs:
                 git config --global user.email "rlabossiere@gozego.com"
                 git add src
                 git commit -m "testing"
+                printenv 
+                env
         on_failure:
           do:
             - put: notify
