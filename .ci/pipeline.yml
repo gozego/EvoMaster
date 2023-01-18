@@ -87,7 +87,10 @@ jobs:
                 apt-get install -y --no-install-recommends git
                 export TOKEN_URL=https://qa-test.paylease.net/testing/automated_helper/setup/Resident/Otp/setUpZegoResidentWithUnit
                 export API_TOKEN=https://public-api.paylease.net/oauth/token
+                export LOCKBOX_SWAGGER_URL=https://lockbox-service.uat.paylease.com/api-json
+                export LOCKBOX_TOKEN=22a98a65-32a4-4226-9a74-4ece85bd28ca
                 ./getTestsForPublicApi.sh -i ((client-id)) -s ((client-secret)) -u https://public-api.paylease.net/graphql
+                ./getTestsForLockbox.sh
         on_failure:
           do:
             - put: notify
