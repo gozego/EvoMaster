@@ -4,7 +4,8 @@
 
 project_info:
   - &git-repo git@github.com:gozego/EvoMaster.git
-  - &trigger-repo git@github.com:gozego/payments-public-api.git
+  - &public-api-repo git@github.com:gozego/payments-public-api.git
+  - &lockbox-repo git@github.com:gozego/lockbox.git
   - &tests-repo git@github.com:gozego/evomaster-tests.git
   - &slack-notify-url ((ci-utility-notices))
 
@@ -32,7 +33,16 @@ resources:
     source:
       branch: master
       private_key: ((git-private-key))
-      uri: *trigger-repo
+      uri: *public-api-repo
+
+  - name: lockbox
+    type: git
+    icon: github
+    check_every: 5m
+    source:
+      branch: main
+      private_key: ((git-private-key))
+      uri: *lockbox-repo
 
   - name: evomaster-tests
     type: git
@@ -56,6 +66,9 @@ jobs:
           fail_fast: true
           steps:
             - get: public-api
+              trigger: true
+              version: every
+            - get: lockbox
               trigger: true
               version: every
             - get: evomaster
@@ -130,8 +143,6 @@ jobs:
                 git config --global user.email "rlabossiere@gozego.com"
                 git add src
                 git commit -m "testing"
-                printenv 
-                env
         on_failure:
           do:
             - put: notify
@@ -140,7 +151,7 @@ jobs:
                 message: Copying tests to GitHub tests failed!
                 mode: normal_with_info
 
-      # Commit new code to GitHub
+      # Push new code to GitHub
       - put: evomaster-tests
         params:
           repository: evomaster-tests
