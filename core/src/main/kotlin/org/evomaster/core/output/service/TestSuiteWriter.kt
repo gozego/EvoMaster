@@ -6,9 +6,9 @@ import org.evomaster.core.EMConfig
 import org.evomaster.core.output.*
 import org.evomaster.core.output.service.TestWriterUtils.Companion.getWireMockVariableName
 import org.evomaster.core.output.service.TestWriterUtils.Companion.handleDefaultStubForAsJavaOrKotlin
-import org.evomaster.core.problem.api.service.ApiWsIndividual
-import org.evomaster.core.problem.external.service.httpws.HttpWsExternalService
-import org.evomaster.core.problem.external.service.httpws.HttpExternalServiceAction
+import org.evomaster.core.problem.api.ApiWsIndividual
+import org.evomaster.core.problem.externalservice.httpws.HttpWsExternalService
+import org.evomaster.core.problem.externalservice.httpws.HttpExternalServiceAction
 import org.evomaster.core.problem.rest.BlackBoxUtils
 import org.evomaster.core.problem.rest.RestIndividual
 import org.evomaster.core.problem.rpc.RPCIndividual
@@ -354,6 +354,9 @@ class TestSuiteWriter {
                     "com.github.tomakehurst.wiremock.extension.responsetemplating.ResponseTemplateTransformer",
                     lines
                 )
+            }
+
+            if(config.isEnabledExternalServiceMocking() && solution.needsMockedDns() ){
                 addImport("com.alibaba.dcm.DnsCacheManipulator", lines)
             }
 
@@ -686,7 +689,7 @@ class TestSuiteWriter {
                         addStatement("$controller.stopSut()", lines)
                         if (format.isJavaOrKotlin()
                             && config.isEnabledExternalServiceMocking()
-                            && solution.hasAnyActiveHttpExternalServiceAction()
+                            && solution.needsMockedDns()
                         ) {
                             getWireMockServerActions(solution)
                                 .forEach { action ->
@@ -755,7 +758,7 @@ class TestSuiteWriter {
 
             if (format.isJavaOrKotlin()
                 && config.isEnabledExternalServiceMocking()
-                && solution.hasAnyActiveHttpExternalServiceAction()
+                && solution.needsMockedDns()
             ) {
                 addStatement("DnsCacheManipulator.clearDnsCache()", lines)
             }

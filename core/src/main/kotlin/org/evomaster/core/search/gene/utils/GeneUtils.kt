@@ -2,13 +2,15 @@ package org.evomaster.core.search.gene.utils
 
 import org.apache.commons.text.StringEscapeUtils
 import org.evomaster.core.output.OutputFormat
+import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.collection.ArrayGene
 import org.evomaster.core.search.gene.collection.TupleGene
-import org.evomaster.core.search.gene.optional.OptionalGene
-import org.evomaster.core.search.gene.optional.SelectableWrapperGene
+import org.evomaster.core.search.gene.optional.*
 import org.evomaster.core.search.gene.placeholder.CycleObjectGene
 import org.evomaster.core.search.gene.placeholder.LimitObjectGene
+import org.evomaster.core.search.gene.sql.SqlAutoIncrementGene
+import org.evomaster.core.search.gene.sql.SqlPrimaryKeyGene
 import org.evomaster.core.search.service.AdaptiveParameterControl
 import org.evomaster.core.search.service.Randomness
 import org.slf4j.Logger
@@ -545,7 +547,7 @@ object GeneUtils {
         if (selected.isEmpty() || selected.size == failedRepairCount) {
             /*
              * we did not find fields that are already selected, or we ended up deselecting all of them.
-             * must select at least one among the others that were of
+             * must select at least one among the others that were off
              */
             val candidates = obj.fields.filter {
                 (it is OptionalGene && it.selectable && !it.isActive)
@@ -570,12 +572,20 @@ object GeneUtils {
                         }
                         return true //we just need one
                     } else if (selectedGene.gene is TupleGene){
-                        val lastElement = selectedGene.gene.elements.last()
-                        repairTupleLastElement(lastElement)
+                        var ok = true
+                        if(selectedGene.gene.lastElementTreatedSpecially){
+                            val lastElement = selectedGene.gene.elements.last()
+                            ok = repairTupleLastElement(lastElement)
+                        }
+                        return ok
                     }
                 } else if (selectedGene is TupleGene) {
-                    val lastElement = selectedGene.elements.last()
-                    repairTupleLastElement(lastElement)
+                    var ok = true
+                    if(selectedGene.lastElementTreatedSpecially) {
+                        val lastElement = selectedGene.elements.last()
+                        ok = repairTupleLastElement(lastElement)
+                    }
+                    return ok
                 } else {
                     (selectedGene as BooleanGene).value = true
                     return true
@@ -630,13 +640,22 @@ object GeneUtils {
                     if (gene.gene is ArrayGene<*>)
                         handleBooleanSelection(gene.gene.template)
                     else
-                        if (gene.gene is TupleGene && gene.gene.lastElementTreatedSpecially)//opt tuple
-                            TupleGene(
+                        if (gene.gene is TupleGene && gene.gene.lastElementTreatedSpecially) {//opt tuple
+                            /*  TupleGene(
+                                      gene.name,
+                                      gene.gene.elements.dropLast(1).plus(handleBooleanSelection(gene.gene.elements.last())),
+                                      lastElementTreatedSpecially = true)*/
+                            if ((gene.gene.elements.last() is ObjectGene || gene.gene.elements.last().getWrappedGene(OptionalGene::class.java)?.gene is ObjectGene))
+                                TupleGene(
                                     gene.name,
-                                    gene.gene.elements.dropLast(1).plus(handleBooleanSelection(gene.gene.elements.last())),
-                                    lastElementTreatedSpecially = true
-                            ) else if (gene.gene is TupleGene)
-                            gene.gene else if (gene.gene is LimitObjectGene) gene else if (gene.gene is CycleObjectGene) gene
+                                    gene.gene.elements.dropLast(1)
+                                        .plus(handleBooleanSelection(gene.gene.elements.last())),
+                                    lastElementTreatedSpecially = true)
+                            else
+                                OptionalGene(gene.name, handleBooleanSelection(gene.gene))
+                        } else if (gene.gene is TupleGene) gene
+                        else if (gene.gene is LimitObjectGene) gene
+                        else if (gene.gene is CycleObjectGene) gene
                         else
                         // on by default, but can be deselected during the search
                             BooleanGene(gene.name, true)
@@ -745,4 +764,33 @@ object GeneUtils {
             str
         }
     }
+
+
+    /**
+     * Traverse the children of a wrapper gene, and return the leaf gene
+     *
+     * Return can only be null if [checkIfInUse] is true.
+     */
+    fun getWrappedValueGene(gene: Gene, checkIfInUse: Boolean = false): Gene? {
+
+        if(checkIfInUse && gene is SelectableWrapperGene && !gene.isActive){
+            return null
+        }
+
+        if (gene is OptionalGene) {
+            return getWrappedValueGene(gene.gene)
+        } else if (gene is CustomMutationRateGene<*>)
+            return getWrappedValueGene(gene.gene)
+        else if (gene is SqlPrimaryKeyGene) {
+            if (gene.gene is SqlAutoIncrementGene)
+                return gene
+            else return getWrappedValueGene(gene.gene)
+        } else if (gene is NullableGene) {
+            return getWrappedValueGene(gene.gene)
+        } else if (gene is FlexibleGene){
+            return getWrappedValueGene(gene.gene)
+        }
+        return gene
+    }
+
 }
