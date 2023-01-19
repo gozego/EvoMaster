@@ -137,8 +137,8 @@ jobs:
             args:
               - -cx
               - |
-                rm -r evomaster-tests/src/
-                cp -r evomaster/src/ evomaster-tests/src/
+                rm -r evomaster-tests/test/java/com/gozego/sdet/tests/
+                cp -r evomaster/src/ evomaster-tests/test/java/com/gozego/sdet/tests/
                 cd evomaster-tests
                 git config --global user.email "rlabossiere@gozego.com"
                 git add src
