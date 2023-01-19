@@ -227,7 +227,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
             }
             val left = when (value) {
                 is Boolean -> "equalTo($value)"
-                is Number -> "equalTo($value)"
+                is Number -> "numberMatches($value)"
                 is String -> "containsString(" +
                         "\"${GeneUtils.applyEscapes(value as String, mode = GeneUtils.EscapeMode.ASSERTION, format = format)}" +
                         "\")"

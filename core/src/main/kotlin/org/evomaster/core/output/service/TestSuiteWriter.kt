@@ -333,7 +333,7 @@ class TestSuiteWriter {
         if (format.isJavaOrKotlin()) {
 
             addImport("java.util.List", lines)
-//            addImport("org.evomaster.client.java.controller.api.EMTestUtils.*", lines, true)
+            addImport("com.gozego.sdet.helpers.EMTestUtils.*", lines, true)
 //            addImport("org.evomaster.client.java.controller.SutHandler", lines)
 
             if (useRestAssured()) {
@@ -378,18 +378,18 @@ class TestSuiteWriter {
                     addImport("io.restassured.config.RedirectConfig.redirectConfig", lines, true)
                 }
 
-//                addImport("org.evomaster.client.java.controller.contentMatchers.NumberMatcher.*", lines, true)
-//                addImport("org.evomaster.client.java.controller.contentMatchers.StringMatcher.*", lines, true)
-//                addImport("org.evomaster.client.java.controller.contentMatchers.SubStringMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.NumberMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.StringMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.SubStringMatcher.*", lines, true)
             }
 
             if (config.expectationsActive) {
-//                addImport(
-//                    "org.evomaster.client.java.controller.expect.ExpectationHandler.expectationHandler",
-//                    lines,
-//                    true
-//                )
-//                addImport("org.evomaster.client.java.controller.expect.ExpectationHandler", lines)
+                addImport(
+                    "com.gozego.sdet.helpers.ExpectationHandler.expectationHandler",
+                    lines,
+                    true
+                )
+                addImport("com.gozego.sdet.helpers.ExpectationHandler", lines)
 
                 if (useRestAssured())
                     addImport("io.restassured.path.json.JsonPath", lines)
