@@ -6,9 +6,9 @@ import org.evomaster.core.EMConfig
 import org.evomaster.core.output.*
 import org.evomaster.core.output.service.TestWriterUtils.Companion.getWireMockVariableName
 import org.evomaster.core.output.service.TestWriterUtils.Companion.handleDefaultStubForAsJavaOrKotlin
-import org.evomaster.core.problem.api.service.ApiWsIndividual
-import org.evomaster.core.problem.external.service.httpws.HttpWsExternalService
-import org.evomaster.core.problem.external.service.httpws.HttpExternalServiceAction
+import org.evomaster.core.problem.api.ApiWsIndividual
+import org.evomaster.core.problem.externalservice.httpws.HttpWsExternalService
+import org.evomaster.core.problem.externalservice.httpws.HttpExternalServiceAction
 import org.evomaster.core.problem.rest.BlackBoxUtils
 import org.evomaster.core.problem.rest.RestIndividual
 import org.evomaster.core.problem.rpc.RPCIndividual
@@ -317,6 +317,14 @@ class TestSuiteWriter {
             addImport("org.junit.Assert.*", lines, true)
         }
 
+        if (format.isTestNG()) {
+            addImport("org.testng.annotations.AfterClass", lines)
+            addImport("org.testng.annotations.BeforeClass", lines)
+            addImport("org.testng.annotations.BeforeMethod", lines)
+            addImport("org.testng.annotations.Test", lines)
+            addImport("org.testng.Assert", lines)
+        }
+
         if (format.isJava()) {
             //in Kotlin this should not be imported
             addImport("java.util.Map", lines)
@@ -325,8 +333,8 @@ class TestSuiteWriter {
         if (format.isJavaOrKotlin()) {
 
             addImport("java.util.List", lines)
-            addImport("org.evomaster.client.java.controller.api.EMTestUtils.*", lines, true)
-            addImport("org.evomaster.client.java.controller.SutHandler", lines)
+            addImport("com.gozego.sdet.helpers.EMTestUtils.*", lines, true)
+//            addImport("org.evomaster.client.java.controller.SutHandler", lines)
 
             if (useRestAssured()) {
                 addImport("io.restassured.RestAssured", lines)
@@ -346,6 +354,9 @@ class TestSuiteWriter {
                     "com.github.tomakehurst.wiremock.extension.responsetemplating.ResponseTemplateTransformer",
                     lines
                 )
+            }
+
+            if(config.isEnabledExternalServiceMocking() && solution.needsMockedDns() ){
                 addImport("com.alibaba.dcm.DnsCacheManipulator", lines)
             }
 
@@ -367,18 +378,18 @@ class TestSuiteWriter {
                     addImport("io.restassured.config.RedirectConfig.redirectConfig", lines, true)
                 }
 
-                addImport("org.evomaster.client.java.controller.contentMatchers.NumberMatcher.*", lines, true)
-                addImport("org.evomaster.client.java.controller.contentMatchers.StringMatcher.*", lines, true)
-                addImport("org.evomaster.client.java.controller.contentMatchers.SubStringMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.NumberMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.StringMatcher.*", lines, true)
+                addImport("com.gozego.sdet.helpers.SubStringMatcher.*", lines, true)
             }
 
             if (config.expectationsActive) {
                 addImport(
-                    "org.evomaster.client.java.controller.expect.ExpectationHandler.expectationHandler",
+                    "com.gozego.sdet.helpers.ExpectationHandler.expectationHandler",
                     lines,
                     true
                 )
-                addImport("org.evomaster.client.java.controller.expect.ExpectationHandler", lines)
+                addImport("com.gozego.sdet.helpers.ExpectationHandler", lines)
 
                 if (useRestAssured())
                     addImport("io.restassured.path.json.JsonPath", lines)
@@ -545,6 +556,7 @@ class TestSuiteWriter {
         when {
             format.isJUnit4() -> lines.add("@BeforeClass")
             format.isJUnit5() -> lines.add("@BeforeAll")
+            format.isTestNG() -> lines.add("@BeforeClass")
         }
         when {
             format.isJava() -> lines.add("public static void initClass()")
@@ -656,6 +668,7 @@ class TestSuiteWriter {
         when {
             format.isJUnit4() -> lines.add("@AfterClass")
             format.isJUnit5() -> lines.add("@AfterAll")
+            format.isTestNG() -> lines.add("@AfterClass")
         }
         when {
             format.isJava() -> lines.add("public static void tearDown()")
@@ -676,7 +689,7 @@ class TestSuiteWriter {
                         addStatement("$controller.stopSut()", lines)
                         if (format.isJavaOrKotlin()
                             && config.isEnabledExternalServiceMocking()
-                            && solution.hasAnyActiveHttpExternalServiceAction()
+                            && solution.needsMockedDns()
                         ) {
                             getWireMockServerActions(solution)
                                 .forEach { action ->
@@ -745,7 +758,7 @@ class TestSuiteWriter {
 
             if (format.isJavaOrKotlin()
                 && config.isEnabledExternalServiceMocking()
-                && solution.hasAnyActiveHttpExternalServiceAction()
+                && solution.needsMockedDns()
             ) {
                 addStatement("DnsCacheManipulator.clearDnsCache()", lines)
             }

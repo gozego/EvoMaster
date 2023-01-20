@@ -15,8 +15,8 @@ import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.output.TestSuiteSplitter
 import org.evomaster.core.output.clustering.SplitResult
 import org.evomaster.core.output.service.TestSuiteWriter
-import org.evomaster.core.problem.external.service.httpws.HarvestActualHttpWsResponseHandler
-import org.evomaster.core.problem.external.service.httpws.HttpWsExternalServiceHandler
+import org.evomaster.core.problem.externalservice.httpws.HarvestActualHttpWsResponseHandler
+import org.evomaster.core.problem.externalservice.httpws.HttpWsExternalServiceHandler
 import org.evomaster.core.problem.graphql.GraphQLIndividual
 import org.evomaster.core.problem.graphql.service.GraphQLBlackBoxModule
 import org.evomaster.core.problem.graphql.service.GraphQLModule
@@ -56,6 +56,10 @@ class Main {
 
                 printLogo()
                 printVersion()
+
+                if(!JdkIssue.checkAddOpens()){
+                    return
+                }
 
                 /*
                     Before running anything, check if the input
@@ -596,7 +600,23 @@ class Main {
                     }
                 }
 
-            }else {
+            }else if (config.problemType == EMConfig.ProblemType.GRAPHQL) {
+                when(config.testSuiteSplitType){
+                    EMConfig.TestSuiteSplitType.NONE -> writer.writeTests(solution, controllerInfoDto?.fullName, controllerInfoDto?.executableFullPath,)
+                    //EMConfig.TestSuiteSplitType.CLUSTER -> throw IllegalStateException("GraphQL problem does not support splitting tests by cluster at this time")
+                    //EMConfig.TestSuiteSplitType.CODE ->
+                    else -> {
+                        //throw IllegalStateException("GraphQL problem does not support splitting tests by code at this time")
+                        val splitResult = TestSuiteSplitter.split(solution, config)
+                        splitResult.splitOutcome.filter{ !it.individuals.isNullOrEmpty() }
+                                .forEach { writer.writeTests(it, controllerInfoDto?.fullName, controllerInfoDto?.executableFullPath, snapshot ) }
+                    }
+                    /*
+                      GraphQL could be split by code (where code is available and trustworthy)
+                     */
+                }
+            } else
+            {
                 /*
                     TODO refactor all the PartialOracle stuff that is meant for only REST
                  */

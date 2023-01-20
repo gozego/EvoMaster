@@ -222,6 +222,9 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
         }
 
         if (format.isJavaOrKotlin()) {
+            if (fieldPath.contains("startTime") || fieldPath.contains("endTime") || fieldPath.endsWith("'duration'")) {
+                return;
+            }
             val left = when (value) {
                 is Boolean -> "equalTo($value)"
                 is Number -> "numberMatches($value)"

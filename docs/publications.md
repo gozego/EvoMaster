@@ -13,6 +13,11 @@ Also, some of these papers provides full replication packages, which are linked 
 
 ## Recent arXiv Technical Reports, not Peer-Reviewed (Yet)
 
+
+* A. Golmohammadi, M. Zhang, A. Arcuri.
+  *Testing RESTful APIs: A Survey*.
+  [[arxiv](https://arxiv.org/abs/2212.14604)]
+
 * A. Belhadi, M. Zhang, A. Arcuri.
   *White-Box and Black-Box Fuzzing for GraphQL APIs*.
   [[arXiv](https://arxiv.org/abs/2209.05833)]
@@ -37,6 +42,15 @@ Also, some of these papers provides full replication packages, which are linked 
 
 ## Peer-Reviewed Publications
 
+
+### 2023
+
+* A. Arcuri, M. Zhang, A. Golmohammadi, A. Belhadi, J. P. Galeotti, B. Marculescu, S. Seran.
+ *EMB: A Curated Corpus of Web/Enterprise
+  Applications And Library Support for Software
+  Testing Research*.
+  IEEE International Conference on Software Testing, Validation and Verification (ICST).
+  [to appear]
 
 ### 2022
 

@@ -69,10 +69,7 @@ class IntrospectiveQuery {
             try {
                 var request = client.target(graphQlEndpoint)
                     .request("application/json")
-
-                for (h in list) {
-                    request = request.header(h.first, h.second)
-                }
+                
                 request.buildPost(query)
                     .invoke()
             } catch (e: Exception) {
@@ -106,7 +103,9 @@ class IntrospectiveQuery {
         val withErrors= node.findPath("errors")
 
        if (!withErrors.isEmpty){
-            throw SutProblemException("Failed to retrieve GraphQL schema. Response contains error: $body .")
+            throw SutProblemException("Failed to retrieve GraphQL schema." +
+                    " Are introspective queries enabled on the tested application?" +
+                    " Response contains error: $body .")
        }
 
         return body
