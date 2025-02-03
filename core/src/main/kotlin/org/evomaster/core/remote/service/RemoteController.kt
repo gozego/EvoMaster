@@ -1,7 +1,7 @@
 package org.evomaster.core.remote.service
 
 import org.evomaster.client.java.controller.api.dto.*
-import org.evomaster.core.database.DatabaseExecutor
+import org.evomaster.core.sql.DatabaseExecutor
 
 
 /**
@@ -10,7 +10,23 @@ import org.evomaster.core.database.DatabaseExecutor
  */
 interface RemoteController : DatabaseExecutor {
 
+    /**
+     * Return all information regarding the System Under Test (SUT),
+     * like the problem definition and other preferred configuration settings.
+     *
+     * Note: some of this info might be dynamic, and so this call might give different results when
+     * executed multiple-times
+     */
     fun getSutInfo(): SutInfoDto?
+
+    /**
+     * Return the latest cached SUT info, or make new call if this is the first.
+     * This is useful for optimization reasons when we are not interested in any dynamic information,
+     * and so a cached value would be fine
+     */
+    fun getCachedSutInfo(): SutInfoDto? {
+        return getSutInfo()
+    }
 
     fun getControllerInfo(): ControllerInfoDto?
 
@@ -24,7 +40,11 @@ interface RemoteController : DatabaseExecutor {
 
     fun startANewSearch(): Boolean
 
-    fun getTestResults(ids: Set<Int> = setOf(), ignoreKillSwitch: Boolean = false): TestResultsDto?
+    fun getTestResults(ids: Set<Int> = setOf(),
+                       ignoreKillSwitch: Boolean = false,
+                       fullyCovered: Boolean = false,
+                       descriptiveIds: Boolean = false,
+    ): TestResultsDto?
 
     fun executeNewRPCActionAndGetResponse(actionDto: ActionDto) : ActionResponseDto?
 

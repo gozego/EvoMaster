@@ -1,5 +1,6 @@
 package org.evomaster.core.search.gene.regex
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.root.CompositeFixedGene
@@ -28,9 +29,8 @@ class DisjunctionListRxGene(
         private val log: Logger = LoggerFactory.getLogger(DisjunctionListRxGene::class.java)
     }
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         return activeDisjunction >= 0 && activeDisjunction < disjunctions.size
-                && getViewOfChildren().all { it.isLocallyValid() }
     }
     override fun copyContent(): Gene {
         val copy = DisjunctionListRxGene(disjunctions.map { it.copy() as DisjunctionRxGene })
@@ -135,17 +135,24 @@ class DisjunctionListRxGene(
                 .getValueAsPrintableString(previousGenes, mode, targetFormat)
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is DisjunctionListRxGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
 
         //TODO: Man, shall we check the size of [disjunctions]
 
-        this.activeDisjunction = other.activeDisjunction
-        for (i in 0 until disjunctions.size) {
-            this.disjunctions[i].copyValueFrom(other.disjunctions[i])
-        }
+        return updateValueOnlyIfValid({
+            var ok = true
+            for (i in 0 until disjunctions.size) {
+                ok = ok && this.disjunctions[i].copyValueFrom(other.disjunctions[i])
+            }
+            if (ok){
+                this.activeDisjunction = other.activeDisjunction
+            }
+            ok
+        }, true)
+
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
@@ -184,4 +191,8 @@ class DisjunctionListRxGene(
         return false
     }
 
+    override fun isChildUsed(child: Gene) : Boolean {
+        verifyChild(child)
+        return child == disjunctions[activeDisjunction]
+    }
 }

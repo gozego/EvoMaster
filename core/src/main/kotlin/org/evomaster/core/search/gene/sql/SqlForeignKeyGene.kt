@@ -44,7 +44,7 @@ class SqlForeignKeyGene(
         }
     }
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         //FIXME: update once this gene is refactored
         //eg. can have multi-column FK, and values are not necessarily numeric
         return true
@@ -182,11 +182,19 @@ class SqlForeignKeyGene(
 
     fun isBound() = uniqueIdOfPrimaryKey >= 0
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is SqlForeignKeyGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
+        val current = this.uniqueIdOfPrimaryKey
         this.uniqueIdOfPrimaryKey = other.uniqueIdOfPrimaryKey
+
+        if (!isLocallyValid()){
+            this.uniqueIdOfPrimaryKey = current
+            return false
+        }
+
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

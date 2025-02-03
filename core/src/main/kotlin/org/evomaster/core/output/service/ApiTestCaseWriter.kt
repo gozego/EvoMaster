@@ -1,15 +1,18 @@
 package org.evomaster.core.output.service
 
 import com.google.gson.Gson
-import org.evomaster.core.database.DbAction
-import org.evomaster.core.database.DbActionResult
-import org.evomaster.core.output.CookieWriter
-import org.evomaster.core.output.Lines
-import org.evomaster.core.output.SqlWriter
-import org.evomaster.core.output.TokenWriter
-import org.evomaster.core.search.EvaluatedDbAction
+import com.google.gson.JsonSyntaxException
+import org.evomaster.core.sql.SqlAction
+import org.evomaster.core.sql.SqlActionResult
+import org.evomaster.core.mongo.MongoDbAction
+import org.evomaster.core.mongo.MongoDbActionResult
+import org.evomaster.core.output.*
+import org.evomaster.core.problem.externalservice.HostnameResolutionAction
+import org.evomaster.core.search.action.EvaluatedDbAction
 import org.evomaster.core.search.EvaluatedIndividual
+import org.evomaster.core.search.action.EvaluatedMongoDbAction
 import org.evomaster.core.search.gene.utils.GeneUtils
+import org.evomaster.core.utils.StringUtils
 
 abstract class ApiTestCaseWriter : TestCaseWriter() {
 
@@ -25,26 +28,43 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
         return name
     }
 
-    override fun handleFieldDeclarations(lines: Lines, baseUrlOfSut: String, ind: EvaluatedIndividual<*>, insertionVars: MutableList<Pair<String, String>>) {
+    override fun handleTestInitialization(lines: Lines, baseUrlOfSut: String, ind: EvaluatedIndividual<*>, insertionVars: MutableList<Pair<String, String>>) {
 
-        //FIXME this is getting auth, not field declaration
-        CookieWriter.handleGettingCookies(format, ind, lines, baseUrlOfSut, this)
-        TokenWriter.handleGettingTokens(format, ind, lines, baseUrlOfSut, this)
-
-        //FIXME this doing initializations, not field declaration
-        val initializingActions = ind.individual.seeInitializingActions().filterIsInstance<DbAction>()
-        val initializingActionResults = (ind.seeResults(initializingActions))
-        if (initializingActionResults.any { (it as? DbActionResult) == null })
+        //TODO: REFACTOR TO HANDLE MULTIPLE DATABASES
+        val initializingSqlActions = ind.individual.seeInitializingActions().filterIsInstance<SqlAction>()
+        val initializingSqlActionResults = (ind.seeResults(initializingSqlActions))
+        if (initializingSqlActionResults.any { (it as? SqlActionResult) == null })
             throw IllegalStateException("the type of results are expected as DbActionResults")
 
+        val initializingMongoActions = ind.individual.seeInitializingActions().filterIsInstance<MongoDbAction>()
+        val initializingMongoResults = (ind.seeResults(initializingMongoActions))
+        if (initializingMongoResults.any { (it as? MongoDbActionResult) == null })
+            throw IllegalStateException("the type of results are expected as MongoDbActionResults")
 
-        if (ind.individual.seeInitializingActions().isNotEmpty()) {
+        val initializingHostnameResolutionActions = ind.individual
+            .seeInitializingActions()
+            .filterIsInstance<HostnameResolutionAction>()
+
+        if (initializingSqlActions.isNotEmpty()) {
             SqlWriter.handleDbInitialization(
                     format,
-                    initializingActions.indices.map {
-                        EvaluatedDbAction(initializingActions[it], initializingActionResults[it] as DbActionResult)
+                initializingSqlActions.indices.map {
+                        EvaluatedDbAction(initializingSqlActions[it], initializingSqlActionResults[it] as SqlActionResult)
                     },
                     lines, insertionVars = insertionVars, skipFailure = config.skipFailureSQLInTestFile)
+        }
+
+        if (initializingMongoActions.isNotEmpty()) {
+            MongoWriter.handleMongoDbInitialization(
+                format,
+                initializingMongoActions.indices.map {
+                    EvaluatedMongoDbAction(initializingMongoActions[it], initializingMongoResults[it] as MongoDbActionResult)
+                },
+                lines, insertionVars = insertionVars, skipFailure = config.skipFailureSQLInTestFile)
+        }
+
+        if (initializingHostnameResolutionActions.isNotEmpty()) {
+            handleHostnameResolutionActions(lines, initializingHostnameResolutionActions)
         }
     }
 
@@ -68,14 +88,22 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
         when (bodyString?.trim()?.first()) {
             //TODO this should be handled recursively, and not ad-hoc here...
             '[' -> {
+                try{
                 // This would be run if the JSON contains an array of objects.
                 val list = Gson().fromJson(bodyString, List::class.java)
                 handleAssertionsOnList(list, lines, "", bodyVarName)
+                } catch (e: JsonSyntaxException) {
+                    lines.addSingleCommentLine("Failed to parse JSON response")
+                }
             }
             '{' -> {
                 // JSON contains an object
-                val resContents = Gson().fromJson(bodyString, Map::class.java)
-                handleAssertionsOnObject(resContents as Map<String, *>, lines, "", bodyVarName)
+                try {
+                    val resContents = Gson().fromJson(bodyString, Map::class.java)
+                    handleAssertionsOnObject(resContents as Map<String, *>, lines, "", bodyVarName)
+                } catch (e: JsonSyntaxException) {
+                    lines.addSingleCommentLine("Failed to parse JSON response")
+                }
             }
             '"' -> {
                 lines.add(bodyIsString(bodyString, GeneUtils.EscapeMode.BODY, bodyVarName))
@@ -89,7 +117,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                     it does not the seem the case for Jest/SuperAgent
                  */
                 when {
-                    isTooLargeBody -> lines.add("/* very large body, which was not handled during the search */")
+                    isTooLargeBody -> lines.addSingleCommentLine("very large body, which was not handled during the search")
 
                     bodyString.isNullOrBlank() -> lines.add(emptyBodyCheck(bodyVarName))
 
@@ -102,13 +130,28 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
 
     private fun handlePrimitive(lines: Lines, bodyString: String, fieldPath: String, responseVariableName: String?) {
 
+        /*
+            If we arrive here, it means we have free text.
+            Such free text could be a primitive value, like a number or boolean.
+            if not, and it is a text, then most likely it is a bug in the API,
+            as free unquoted text would not be a valid JSON element.
+            Still, even in those cases, we want to capture such data in an assertion
+
+            https://www.rfc-editor.org/rfc/rfc8259.html
+         */
+
         val s = bodyString.trim()
 
         when {
             format.isJavaOrKotlin() -> {
+                /*
+                    Unfortunately, a limitation of RestAssured is that for JSON it only handles
+                    object and array.
+                    The rest is either ignored or leads to crash
+                 */
                 lines.add(bodyIsString(s, GeneUtils.EscapeMode.BODY, responseVariableName))
             }
-            format.isJavaScript() || format.isCsharp() -> {
+            format.isJavaScript() || format.isCsharp() || format.isPython() -> {
                 try {
                     val number = s.toDouble()
                     handleAssertionsOnField(number, lines, fieldPath, responseVariableName)
@@ -122,7 +165,11 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                     return
                 }
 
-                throw IllegalStateException("Cannot parse: $s")
+                /*
+                    Note: for JS, this will not work, as call would crash due to invalid JSON
+                    payload (Java and Python don't seem to have such issue)
+                 */
+                lines.add(bodyIsString(s, GeneUtils.EscapeMode.BODY, responseVariableName))
             }
             else -> throw IllegalStateException("Format not supported yet: $format")
         }
@@ -139,6 +186,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                 format.isJavaOrKotlin() -> if (fieldPath.isEmpty()) "" else if (fieldPath.startsWith("'")) "$fieldPath." else "'$fieldPath'."
                 format.isJavaScript() -> if (fieldPath.isEmpty()) "" else "${if (fieldPath.startsWith("[") || fieldPath.startsWith(".")) "" else "."}$fieldPath"
                 format.isCsharp() -> if (fieldPath.isEmpty()) "" else "${if (fieldPath.startsWith("[")) "" else "."}$fieldPath"
+                format.isPython() -> if (fieldPath.isEmpty()) "" else "${if (fieldPath.startsWith("[") || fieldPath.startsWith(".")) "" else "."}$fieldPath"
                 else -> throw IllegalStateException("Format not supported yet: $format")
             }
 
@@ -148,6 +196,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                 format.isKotlin() -> ".body(\"${k}isEmpty()\", `is`(true))" //'is' is a keyword in Kotlin
                 format.isJavaScript() -> "expect(Object.keys($responseVariableName.body${k}).length).toBe(0);"
                 format.isCsharp() -> "Assert.True($responseVariableName${k}.ToString() == \"{}\");"
+                format.isPython() -> "assert len($responseVariableName.json()${k}) == 0"
                 else -> throw IllegalStateException("Format not supported yet: $format")
             }
 
@@ -172,6 +221,9 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                             needsDot = false
                             "[\"${it.key}\"]"
                         }
+                    } else if (format.isPython()) {
+                        needsDot = false
+                        "[\"${it.key}\"]"
                     //TODO need to deal with '' C#? see EscapeRest
                     } else {
                         it.key
@@ -204,6 +256,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                 format.isJavaOrKotlin() -> ".body(\"${fieldPath}\", nullValue())"
                 format.isJavaScript() -> "expect($responseVariableName.body$fieldPath).toBe(null);"
                 format.isCsharp() -> "Assert.True($responseVariableName$fieldPath == null);"
+                format.isPython() -> "assert $responseVariableName.json()$fieldPath is None"
                 else -> throw IllegalStateException("Format not supported yet: $format")
             }
             lines.add(instruction)
@@ -236,9 +289,11 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
             return
         }
 
-        if (format.isJavaScript() || format.isCsharp()) {
+        if (format.isJavaScript() || format.isCsharp() || format.isPython()) {
             val toPrint = if (value is String) {
                 "\"" + GeneUtils.applyEscapes(value, mode = GeneUtils.EscapeMode.ASSERTION, format = format) + "\""
+            } else if(value is Boolean && format.isPython()) {
+                StringUtils.capitalization(value.toString())
             } else {
                 value.toString()
             }
@@ -246,6 +301,8 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
             if (isSuitableToPrint(toPrint)) {
                 if (format.isJavaScript()) {
                     lines.add("expect($responseVariableName.body$fieldPath).toBe($toPrint);")
+                } else if (format.isPython()){
+                    lines.add("assert $responseVariableName.json()$fieldPath == $toPrint")
                 } else {
                     assert(format.isCsharp())
                     if (fieldPath != ".traceId" || !lines.toString().contains("status == 400"))
@@ -296,7 +353,7 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
             handleAssertionsOnField(list[i], lines, "$fieldPath[$i]", responseVariableName)
         }
         if (skipped > 0) {
-            lines.add("// Skipping assertions on the remaining $skipped elements. This limit of $limit elements can be increased in the configurations")
+            lines.addSingleCommentLine("Skipping assertions on the remaining $skipped elements. This limit of $limit elements can be increased in the configurations")
         }
     }
 
@@ -324,6 +381,10 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
             return "Assert.True(string.IsNullOrEmpty(await $responseVariableName.Content.ReadAsStringAsync()));"
         }
 
+        if (format.isPython()) {
+            return "assert $responseVariableName.text == ''"
+        }
+
         throw IllegalStateException("Unsupported format $format")
     }
 
@@ -342,6 +403,8 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                 "expect($responseVariableName.body$fieldPath.length).toBe($expectedSize);"
             format.isCsharp() ->
                 "Assert.True($responseVariableName$fieldPath.Count == $expectedSize);"
+            format.isPython() ->
+                "assert len($responseVariableName.json()$fieldPath) == $expectedSize"
             else -> throw IllegalStateException("Not supported format $format")
         }
 
@@ -367,6 +430,10 @@ abstract class ApiTestCaseWriter : TestCaseWriter() {
                 else -> content
             }
             return "Assert.True($responseVariableName == \"$k\");"
+        }
+
+        if (format.isPython()) {
+            return "assert \"$content\" in $responseVariableName.text"
         }
 
         throw IllegalStateException("Not supported format $format")

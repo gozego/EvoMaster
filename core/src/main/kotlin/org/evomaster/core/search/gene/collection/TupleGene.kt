@@ -1,12 +1,12 @@
 package org.evomaster.core.search.gene.collection
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
-import org.evomaster.core.problem.util.ParamUtil
+import org.evomaster.core.problem.graphql.GraphQLUtils
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.optional.OptionalGene
 import org.evomaster.core.search.gene.root.CompositeFixedGene
-import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.gene.utils.GeneUtils
 import org.evomaster.core.search.impact.impactinfocollection.GeneImpact
 import org.evomaster.core.search.impact.impactinfocollection.value.TupleGeneImpact
@@ -53,8 +53,8 @@ class TupleGene(
         val log: Logger = LoggerFactory.getLogger(TupleGene::class.java)
     }
 
-    override fun isLocallyValid(): Boolean {
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren(): Boolean {
+        return true
     }
 
     /*
@@ -80,7 +80,8 @@ class TupleGene(
 
         val buffer = StringBuffer()
 
-        if (mode == GeneUtils.EscapeMode.GQL_NONE_MODE) {
+        if (mode == GeneUtils.EscapeMode.GQL_NONE_MODE || mode == GeneUtils.EscapeMode.BOOLEAN_SELECTION_NESTED_MODE
+            || mode == GeneUtils.EscapeMode.BOOLEAN_SELECTION_MODE) {
 
             if (lastElementTreatedSpecially) {
                 val returnGene = elements.last()
@@ -96,7 +97,7 @@ class TupleGene(
                         .filter { it.getWrappedGene(OptionalGene::class.java)?.isActive ?: true }
                         .joinToString(",") {
 
-                            gqlInputsPrinting(it, targetFormat)
+                            GraphQLUtils.inputsPrinting(it, targetFormat)
 
                         }.replace("\"", "\\\"")
                     if (s.isNotEmpty()) {
@@ -127,14 +128,21 @@ class TupleGene(
                     )
                 }
             } else {
+                //tuple contains only inputs
+                //if it is opt , it should be active
+                //val nonOptOrOptActive = elements.filter { it.getWrappedGene(OptionalGene::class.java)?.isActive ?: true }
+                val nonOptOrOptActive = elements.filter {(it.getWrappedGene(OptionalGene::class.java)?.isActive == true) || (it.getWrappedGene(OptionalGene::class.java) == null) }
+                if (nonOptOrOptActive.isNotEmpty()){
+
                 //need the name for inputs only
                 buffer.append(name)
-                //printout only the inputs, since there is no return (is a primitive type)
-                val s = elements
+
+                //printout only the inputs (that are non opt or opt active), since there is no return (is a primitive type)
+                val s = nonOptOrOptActive
                     //.filter { it !is OptionalGene || it.isActive }
-                    .filter { it.getWrappedGene(OptionalGene::class.java)?.isActive ?: true }
+                    //.filter { it.getWrappedGene(OptionalGene::class.java)?.isActive ?: true }
                     .joinToString(",") {
-                        gqlInputsPrinting(it, targetFormat)
+                        GraphQLUtils.inputsPrinting(it, targetFormat)
                     }.replace("\"", "\\\"")
 
                 if (s.isNotEmpty()) {
@@ -143,7 +151,9 @@ class TupleGene(
                     buffer.append(")")
                 }
 
-            }
+            }else {
+                //input in the tuple is optional-> print only the name
+                buffer.append(name)}}
         } else {
             "[" + elements.filter { it.isPrintable() }.joinTo(buffer, ", ") {
                 it.getValueAsPrintableString(
@@ -157,35 +167,6 @@ class TupleGene(
 
     }
 
-    private fun gqlInputsPrinting(
-        it: Gene,
-        targetFormat: OutputFormat?
-    ) = if (it is EnumGene<*> ||
-        (it is OptionalGene && it.gene is EnumGene<*>) ||
-        (it is OptionalGene && it.gene is ArrayGene<*> && it.gene.template is EnumGene<*>) ||
-        (it is OptionalGene && it.gene is ArrayGene<*> && it.gene.template is OptionalGene && it.gene.template.gene is EnumGene<*>) ||
-        (it is ArrayGene<*> && it.template is EnumGene<*>) ||
-        (it is ArrayGene<*> && it.template is OptionalGene && it.template.gene is EnumGene<*>)
-    ) {
-        val i = it.getValueAsRawString()
-        "${it.name} : $i"
-    } else {
-        if (it is ObjectGene || (it.getWrappedGene(OptionalGene::class.java)?.gene  is ObjectGene)) {
-            val i = it.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_MODE)
-            " $i"
-        } else {
-            if (it is ArrayGene<*> || (it is OptionalGene && it.gene is ArrayGene<*>)) {
-                val i = it.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_ARRAY_MODE)
-                "${it.name} : $i"
-            } else {
-                val mode =
-                    if (ParamUtil.getValueGene(it) is StringGene) GeneUtils.EscapeMode.GQL_STR_VALUE else GeneUtils.EscapeMode.GQL_INPUT_MODE
-                val i = it.getValueAsPrintableString(mode = mode, targetFormat = targetFormat)
-                "${it.name} : $i"
-            }
-        }
-    }
-
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
         elements.filter { it.isMutable() }.forEach {
@@ -193,14 +174,23 @@ class TupleGene(
         }
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is TupleGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
         assert(elements.size == other.elements.size)
-        (elements.indices).forEach {
-            elements[it].copyValueFrom(other.elements[it])
-        }
+
+
+        return updateValueOnlyIfValid(
+            {
+                var ok = true
+                (elements.indices).forEach {
+                    ok = ok && elements[it].copyValueFrom(other.elements[it])
+                }
+                ok
+            },
+            true
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

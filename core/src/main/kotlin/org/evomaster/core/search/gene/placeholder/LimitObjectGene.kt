@@ -17,7 +17,7 @@ class LimitObjectGene(name: String) : SimpleGene(name) {
 
     override fun copyContent(): Gene = LimitObjectGene(name)
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         return true
     }
 
@@ -38,7 +38,8 @@ class LimitObjectGene(name: String) : SimpleGene(name) {
         return false
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

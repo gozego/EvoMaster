@@ -1,8 +1,8 @@
 package org.evomaster.core.search.impact.impactinfocollection
 
-import org.evomaster.core.search.Action
+import org.evomaster.core.search.action.Action
 import org.evomaster.core.search.Individual
-import org.evomaster.core.search.ActionFilter
+import org.evomaster.core.search.action.ActionFilter
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.sql.*
 import org.evomaster.core.search.impact.impactinfocollection.sql.*
@@ -16,12 +16,13 @@ import org.evomaster.core.search.impact.impactinfocollection.value.date.TimeGene
 import org.evomaster.core.search.impact.impactinfocollection.value.numeric.*
 import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
-import org.evomaster.core.problem.external.service.ApiExternalServiceAction
+import org.evomaster.core.problem.externalservice.ApiExternalServiceAction
 import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.search.gene.collection.*
 import org.evomaster.core.search.gene.datetime.DateGene
 import org.evomaster.core.search.gene.datetime.DateTimeGene
 import org.evomaster.core.search.gene.datetime.TimeGene
+import org.evomaster.core.search.gene.datetime.TimeOffsetGene
 import org.evomaster.core.search.gene.numeric.*
 import org.evomaster.core.search.gene.optional.CustomMutationRateGene
 import org.evomaster.core.search.gene.optional.OptionalGene
@@ -32,6 +33,7 @@ import org.evomaster.core.search.gene.string.NumericStringGene
 import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.impact.impactinfocollection.regex.*
 import org.evomaster.core.search.impact.impactinfocollection.value.collection.SqlMultidimensionalArrayGeneImpact
+import org.evomaster.core.search.impact.impactinfocollection.value.date.TimeOffsetGeneImpact
 import org.evomaster.core.search.service.mutator.MutatedGeneSpecification
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -49,6 +51,7 @@ class ImpactUtils {
 
         private val log: Logger = LoggerFactory.getLogger(ImpactUtils::class.java)
 
+
         fun createGeneImpact(gene : Gene, id : String) : GeneImpact{
             return when(gene){
                 is CustomMutationRateGene<*> -> DisruptiveGeneImpact(id, gene)
@@ -64,11 +67,12 @@ class ImpactUtils {
                 is ObjectGene -> ObjectGeneImpact(id, gene)
                 is TupleGene -> TupleGeneImpact(id, gene)
                 is MapGene<*, *> -> MapGeneImpact(id)
-                is PairGene<*, *> -> throw IllegalStateException("do not count impacts for PairGene yet")
+                //is PairGene<*, *> -> throw IllegalStateException("do not count impacts for PairGene yet")
                 is ArrayGene<*> -> ArrayGeneImpact(id)
                 is DateGene -> DateGeneImpact(id, gene)
                 is DateTimeGene -> DateTimeGeneImpact(id, gene)
                 is TimeGene -> TimeGeneImpact(id, gene)
+                is TimeOffsetGene -> TimeOffsetGeneImpact(id, gene)
                 is SeededGene<*> -> SeededGeneImpact(id, gene)
                 // math
                 is BigDecimalGene -> BigDecimalGeneImpact(id)
@@ -102,6 +106,7 @@ class ImpactUtils {
         private const val SEPARATOR_ACTION_TO_GENE = "::"
         private const val SEPARATOR_GENE = ";"
         private const val SEPARATOR_GENE_WITH_TYPE = ">"
+        private const val SEPARATOR_GENETYPE_TO_NAME = "::"
 
         /**
          * TODO
@@ -115,7 +120,7 @@ class ImpactUtils {
         }
 
         fun <T : Individual> generateGeneId(individual: T, gene: Gene) : String{
-            if (!individual.seeGenes().contains(gene)){
+            if (!individual.seeTopGenes().contains(gene)){
                 log.warn("cannot find this gene ${gene.name} ($gene) in this individual")
                 return generateGeneId(gene)
             }
@@ -145,11 +150,11 @@ class ImpactUtils {
             val mutatedGenesWithContext = mutableMapOf<String, MutableList<MutatedGeneWithContext>>()
 
             if (individual.seeAllActions().isEmpty()){
-                individual.seeGenes().filter { mutatedGenes.contains(it) }.forEach { g->
+                individual.seeTopGenes().filter { mutatedGenes.contains(it) }.forEach { g->
                     val id = generateGeneId(individual, g)
                     val contexts = mutatedGenesWithContext.getOrPut(id){ mutableListOf()}
                     val previous = findGeneById(previousIndividual, id)?: throw IllegalArgumentException("mismatched previous individual")
-                    contexts.add(MutatedGeneWithContext(g, previous = previous, numOfMutatedGene = mutatedGenes.size))
+                    contexts.add(MutatedGeneWithContext(g, previous = previous, numOfMutatedGene = mutatedGenes.size, actionTypeClass = null))
                 }
             }else{
                 individual.seeAllActions().forEachIndexed { index, action ->
@@ -157,7 +162,16 @@ class ImpactUtils {
                         val id = generateGeneId(action, g)
                         val contexts = mutatedGenesWithContext.getOrPut(id){ mutableListOf()}
                         val previous = findGeneById(previousIndividual, id, action.getName(), index, action.getLocalId(), action is ApiExternalServiceAction, false)?: throw IllegalArgumentException("mismatched previous individual")
-                        contexts.add(MutatedGeneWithContext(g, action.getName(), index, action.getLocalId(), action is ApiExternalServiceAction, previous, mutatedGenes.size))
+                        contexts.add(MutatedGeneWithContext(
+                            g,
+                            action.getName(),
+                            index,
+                            action.getLocalId(),
+                            action is ApiExternalServiceAction,
+                            previous,
+                            mutatedGenes.size,
+                            actionTypeClass = action::class.java.name
+                        ))
                     }
                 }
             }
@@ -192,7 +206,7 @@ class ImpactUtils {
                            index for db gene might be changed if new insertions are added.
                            then there is a need to update the index in previous based on the number of added
                          */
-                        val indexInPrevious = if (index == null) null else index - (if (isInit && !mutatedGeneSpecification.addedExistingDataInitialization.contains(a)) mutatedGeneSpecification.addedExistingDataInitialization.size else 0)
+                        val indexInPrevious = if (index == null) null else index - (if (isInit && mutatedGeneSpecification.addedExistingDataInInitialization[a::class.java.name]?.contains(a) == false) mutatedGeneSpecification.addedExistingDataInInitialization[a::class.java.name]?.size?:0 else 0)
                         val previous = findGeneById(
                                 individual=previousIndividual,
                                 id = id,
@@ -204,9 +218,14 @@ class ImpactUtils {
                         )
                         list.add(MutatedGeneWithContext(
                             current = mutatedg,
-                            previous = previous,
+                            actionName = a.getName(),
                             position = index,
-                            action = a.getName(), actionLocalId = a.getLocalId(), isDynamicAction = index == null, numOfMutatedGene = num))
+                            actionLocalId = a.getLocalId(),
+                            isDynamicAction = index == null,
+                            previous = previous,
+                            numOfMutatedGene = num,
+                            actionTypeClass = a::class.java.name
+                        ))
                     }
                 }
             }
@@ -230,10 +249,10 @@ class ImpactUtils {
             }else{
                 Lazy.assert { !isInit }
 
-                individual.seeGenes().filter { mutatedGeneSpecification.mutatedGeneInfo().contains(it) }.forEach { g->
+                individual.seeTopGenes().filter { mutatedGeneSpecification.mutatedGeneInfo().contains(it) }.forEach { g->
                     val id = generateGeneId(individual, g)
                     val previous = findGeneById(previousIndividual, id)?: throw IllegalArgumentException("mismatched previous individual")
-                    list.add(MutatedGeneWithContext(g, previous = previous, numOfMutatedGene = num))
+                    list.add(MutatedGeneWithContext(g, previous = previous, numOfMutatedGene = num, actionTypeClass = null))
                 }
             }
 
@@ -261,7 +280,7 @@ class ImpactUtils {
         }
 
         private fun findGeneById(individual: Individual, id : String):Gene?{
-            return individual.seeGenes().find { generateGeneId(individual, it) == id }
+            return individual.seeTopGenes().find { generateGeneId(individual, it) == id }
         }
 
         fun extractGeneById(actions: List<Action>, id: String) : MutableList<Gene>{
@@ -314,6 +333,37 @@ class ImpactUtils {
             return found.firstOrNull { it.getLocalId() == gene.getLocalId() }?: found.also {
                 if (it.size > 1) log.warn("{} genes have been mutated with the name {} and localId {}",it.size, gene.name, gene.getLocalId())
             }.firstOrNull()
+        }
+
+
+        /**
+         * @param gene current gene
+         * @param msg message to show
+         * @return message of gene types from gene to its root action
+         */
+        fun printGeneToRootAction(gene: Gene, doIncludeGeneValue: Boolean= true) : String{
+            val classNames = mutableListOf<String>()
+            getGeneClassAndNameToItsRootAction(gene, classNames)
+            return "${System.lineSeparator()}${if (doIncludeGeneValue) "GeneValue:${gene.getValueAsRawString()}${System.lineSeparator()}" else ""}${joinMsgAsDirectory(classNames)}"
+        }
+
+        /**
+         * format msg as directory
+         */
+        fun joinMsgAsDirectory(msg: MutableList<String>): String{
+            if (msg.isEmpty()) return ""
+            return msg.mapIndexed { index, s ->  "${" ".repeat(index)}|-$s"}.joinToString(System.lineSeparator())
+        }
+
+        private fun getGeneClassAndNameToItsRootAction(gene:Gene, classNames: MutableList<String>){
+            classNames.add(0,"${gene::class.java.simpleName}$SEPARATOR_GENETYPE_TO_NAME${gene.name}")
+            if (gene.parent != null){
+                if(gene.parent is Gene){
+                    getGeneClassAndNameToItsRootAction(gene.parent as Gene, classNames)
+                }else if (gene.parent is Action){
+                    classNames.add(0, "${(gene.parent as Action)::class.java.simpleName}[${(gene.parent as Action).getName()}]")
+                }
+            }
         }
     }
 }

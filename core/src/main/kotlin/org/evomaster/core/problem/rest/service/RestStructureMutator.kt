@@ -2,11 +2,12 @@ package org.evomaster.core.problem.rest.service
 
 import com.google.inject.Inject
 import org.evomaster.core.Lazy
-import org.evomaster.core.database.SqlInsertBuilder
+import org.evomaster.core.sql.SqlInsertBuilder
 import org.evomaster.core.problem.api.service.ApiWsStructureMutator
+import org.evomaster.core.problem.enterprise.SampleType
 import org.evomaster.core.problem.rest.*
 import org.evomaster.core.problem.rest.resource.RestResourceCalls
-import org.evomaster.core.search.ActionFilter
+import org.evomaster.core.search.action.ActionFilter
 import org.evomaster.core.search.EvaluatedIndividual
 import org.evomaster.core.search.Individual
 import org.evomaster.core.search.service.mutator.MutatedGeneSpecification
@@ -23,12 +24,12 @@ class RestStructureMutator : ApiWsStructureMutator() {
     @Inject
     private lateinit var sampler: RestSampler
 
+    @Inject
+    private lateinit var builder: RestIndividualBuilder
 
     override fun addInitializingActions(individual: EvaluatedIndividual<*>, mutatedGenes: MutatedGeneSpecification?) {
         addInitializingActions(individual, mutatedGenes, sampler)
     }
-
-
 
     override fun mutateStructure(individual: Individual, evaluatedIndividual: EvaluatedIndividual<*>, mutatedGenes: MutatedGeneSpecification?, targets: Set<Int>) {
         if (individual !is RestIndividual) {
@@ -51,7 +52,7 @@ class RestStructureMutator : ApiWsStructureMutator() {
         when (individual.sampleType) {
             SampleType.RANDOM -> mutateForRandomType(individual, mutatedGenes)
 
-            SampleType.SMART_GET_COLLECTION -> mutateForSmartGetCollection(individual, mutatedGenes)
+            SampleType.REST_SMART_GET_COLLECTION -> mutateForSmartGetCollection(individual, mutatedGenes)
 
             SampleType.SMART -> throw IllegalStateException(
                     "SMART sampled individuals shouldn't be marked for structure mutations")
@@ -86,7 +87,7 @@ class RestStructureMutator : ApiWsStructureMutator() {
                         one simple way to distinguish the POST on collection is that
                         they are not chaining a location, as GET is on same endpoint
                     */
-                    !a.saveLocation && a.verb == HttpVerb.POST
+                    !a.saveCreatedResourceLocation && a.verb == HttpVerb.POST
                 }
 
         if (indices.isEmpty()) {
@@ -127,9 +128,9 @@ class RestStructureMutator : ApiWsStructureMutator() {
             val idx = indices.last()
 
             val postTemplate = ind.seeMainExecutableActions()[idx]
-            Lazy.assert{postTemplate.verb == HttpVerb.POST && !postTemplate.saveLocation}
+            Lazy.assert{postTemplate.verb == HttpVerb.POST && !postTemplate.saveCreatedResourceLocation}
 
-            val post = sampler.createActionFor(postTemplate, ind.seeAllActions().last() as RestCallAction)
+            val post = builder.createBoundActionFor(postTemplate, ind.seeAllActions().last() as RestCallAction)
 
 
             /*
@@ -138,7 +139,7 @@ class RestStructureMutator : ApiWsStructureMutator() {
                 POSTs
              */
             //ind.seeActions().add(idx, post)
-            ind.addResourceCall(idx, RestResourceCalls(actions = mutableListOf(post), dbActions = listOf()))
+            ind.addResourceCall(idx, RestResourceCalls(actions = mutableListOf(post), sqlActions = listOf()))
 
             //save mutated genes
             mutatedGenes?.addRemovedOrAddedByAction(
@@ -160,7 +161,7 @@ class RestStructureMutator : ApiWsStructureMutator() {
 
 
             //ind.seeActions().add(sampledAction)
-            ind.addResourceCall(restCalls = RestResourceCalls(actions = mutableListOf(sampledAction), dbActions = listOf()))
+            ind.addResourceCall(restCalls = RestResourceCalls(actions = mutableListOf(sampledAction), sqlActions = listOf()))
 
             //save mutated genes
             mutatedGenes?.addRemovedOrAddedByAction(
@@ -202,7 +203,7 @@ class RestStructureMutator : ApiWsStructureMutator() {
             val sampledAction = sampler.sampleRandomAction(0.05) as RestCallAction
             val chosen = randomness.nextInt(ind.seeMainActionComponents().size)
             //ind.seeActions().add(chosen, sampledAction)
-            ind.addResourceCall(chosen, RestResourceCalls(actions = mutableListOf(sampledAction), dbActions = listOf()))
+            ind.addResourceCall(chosen, RestResourceCalls(actions = mutableListOf(sampledAction), sqlActions = listOf()))
 
             //save mutated genes
             mutatedGenes?.addRemovedOrAddedByAction(

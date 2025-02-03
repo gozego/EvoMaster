@@ -1,13 +1,22 @@
 package org.evomaster.core.problem.rest
 
-import org.evomaster.core.database.DbAction
-import org.evomaster.core.database.DbActionUtils
-import org.evomaster.core.problem.api.service.ApiWsIndividual
-import org.evomaster.core.problem.external.service.ApiExternalServiceAction
+import org.evomaster.core.search.action.Action
+import org.evomaster.core.search.action.ActionComponent
+import org.evomaster.core.search.action.ActionFilter
+import org.evomaster.core.sql.SqlAction
+import org.evomaster.core.sql.SqlActionUtils
+import org.evomaster.core.mongo.MongoDbAction
+import org.evomaster.core.problem.api.ApiWsIndividual
+import org.evomaster.core.problem.enterprise.EnterpriseActionGroup
+import org.evomaster.core.problem.enterprise.EnterpriseChildTypeVerifier
+import org.evomaster.core.problem.enterprise.SampleType
+import org.evomaster.core.problem.externalservice.ApiExternalServiceAction
+import org.evomaster.core.problem.externalservice.HostnameResolutionAction
 import org.evomaster.core.problem.rest.resource.RestResourceCalls
 import org.evomaster.core.problem.rest.resource.SamplerSpecification
 import org.evomaster.core.search.*
-import org.evomaster.core.search.ActionFilter.*
+import org.evomaster.core.search.action.ActionFilter.*
+import org.evomaster.core.search.action.EnvironmentAction
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.tracer.Traceable
 import org.evomaster.core.search.tracer.TraceableElementCopyFilter
@@ -22,43 +31,55 @@ import kotlin.math.max
  * @property index indicates when the individual is created, ie, using num of evaluated individual.
  */
 class RestIndividual(
-        val sampleType: SampleType,
-        val sampleSpec: SamplerSpecification? = null,
-        trackOperator: TrackOperator? = null,
-        index : Int = -1,
-        allActions : MutableList<out ActionComponent>,
-        mainSize : Int = allActions.size,
-        dbSize: Int = 0,
-        groups : GroupsOfChildren<StructuralElement> = getEnterpriseTopGroups(allActions,mainSize,dbSize)
-): ApiWsIndividual(trackOperator, index, allActions,
-    childTypeVerifier = {
-        RestResourceCalls::class.java.isAssignableFrom(it)
-                || DbAction::class.java.isAssignableFrom(it)
-    }, groups) {
+    sampleType: SampleType,
+    val sampleSpec: SamplerSpecification? = null,
+    trackOperator: TrackOperator? = null,
+    index : Int = -1,
+    allActions : MutableList<out ActionComponent>,
+    mainSize : Int = allActions.size,
+    sqlSize: Int = 0,
+    mongoSize: Int = 0,
+    dnsSize: Int = 0,
+    groups : GroupsOfChildren<StructuralElement> = getEnterpriseTopGroups(allActions,mainSize,sqlSize,mongoSize,dnsSize)
+): ApiWsIndividual(sampleType, trackOperator, index, allActions,
+    childTypeVerifier = EnterpriseChildTypeVerifier(RestCallAction::class.java,RestResourceCalls::class.java),
+    groups) {
+
+    /*
+        Note when instantiating this class... input actions might or might have not been initialized.
+        This all depends on how this object is created.
+        If not initialized, then would need to make sure to call doInitialize() on it.
+        Likewise, might need to handle doInitializeLocalId().
+        Furthermore, doGlobalInitialize() can only be handled once the object is created.
+        Note that this latter would call doInitializeLocalId() if needed.
+        However, when creating test cases manually with specific values (or seeded from tests) might
+        want to skip calling doGlobalInitialize() as that can modify the values (and so might need to
+        call doInitializeLocalId() directly, possibly by calling resetLocalIdRecursively() first).
+     */
 
     companion object{
         private val log: Logger = LoggerFactory.getLogger(RestIndividual::class.java)
     }
 
     constructor(
-            resourceCalls: MutableList<RestResourceCalls>,
-            sampleType: SampleType,
-            sampleSpec: SamplerSpecification? = null,
-            dbInitialization: MutableList<DbAction> = mutableListOf(),
-            trackOperator: TrackOperator? = null,
-            index : Int = -1
+        resourceCalls: MutableList<RestResourceCalls>,
+        sampleType: SampleType,
+        sampleSpec: SamplerSpecification? = null,
+        dbInitialization: MutableList<SqlAction> = mutableListOf(),
+        trackOperator: TrackOperator? = null,
+        index : Int = -1
     ) : this(sampleType, sampleSpec, trackOperator, index, mutableListOf<ActionComponent>().apply {
         addAll(dbInitialization); addAll(resourceCalls)
     }, resourceCalls.size, dbInitialization.size)
 
     constructor(
-            actions: MutableList<out Action>,
-            sampleType: SampleType,
-            dbInitialization: MutableList<DbAction> = mutableListOf(),
-            trackOperator: TrackOperator? = null,
-            index : Int = Traceable.DEFAULT_INDEX
+        actions: MutableList<out Action>,
+        sampleType: SampleType,
+        dbInitialization: MutableList<SqlAction> = mutableListOf(),
+        trackOperator: TrackOperator? = null,
+        index : Int = Traceable.DEFAULT_INDEX
     ) : this(
-                    actions.map {RestResourceCalls(actions= listOf(it as RestCallAction), dbActions = listOf())}.toMutableList(),
+                    actions.map {RestResourceCalls(actions= listOf(it as RestCallAction), sqlActions = listOf())}.toMutableList(),
                     sampleType,
                     null,
                     dbInitialization,
@@ -76,36 +97,54 @@ class RestIndividual(
                 index,
                 children.map { it.copy() }.toMutableList() as MutableList<out ActionComponent>,
                 mainSize = groupsView()!!.sizeOfGroup(GroupsOfChildren.MAIN),
-                dbSize = groupsView()!!.sizeOfGroup(GroupsOfChildren.INITIALIZATION_SQL)
+                sqlSize = groupsView()!!.sizeOfGroup(GroupsOfChildren.INITIALIZATION_SQL),
+                mongoSize = groupsView()!!.sizeOfGroup(GroupsOfChildren.INITIALIZATION_MONGO),
+                dnsSize = groupsView()!!.sizeOfGroup(GroupsOfChildren.INITIALIZATION_DNS)
         )
     }
 
 
     override fun canMutateStructure(): Boolean {
         return sampleType == SampleType.RANDOM ||
-                sampleType == SampleType.SMART_GET_COLLECTION ||
+                sampleType == SampleType.REST_SMART_GET_COLLECTION ||
                 sampleType == SampleType.SMART_RESOURCE
     }
 
-    /**
-     * Note that if resource-mio is enabled, [dbInitialization] of a RestIndividual is always empty, since DbActions are created
-     * for initializing an resource for a set of actions on the same resource.
-     * TODO is this no longer the case?
-     *
-     * This effects on a configuration with respect to  [EMConfig.geneMutationStrategy] is ONE_OVER_N when resource-mio is enabled.
-     *
-     * In another word, if resource-mio is enabled, whatever [EMConfig.geneMutationStrategy] is, it always follows "GeneMutationStrategy.ONE_OVER_N_BIASED_SQL"
-     * strategy.
-     *
-     */
-    override fun seeGenes(filter: GeneFilter): List<out Gene> {
 
-        return when (filter) {
-            GeneFilter.ALL -> seeAllActions().flatMap(Action::seeTopGenes)
-            GeneFilter.NO_SQL -> seeActions(ActionFilter.NO_SQL).flatMap(Action::seeTopGenes)
-            GeneFilter.ONLY_SQL -> seeDbActions().flatMap(DbAction::seeTopGenes)
-            GeneFilter.ONLY_EXTERNAL_SERVICE -> seeExternalServiceActions().flatMap(ApiExternalServiceAction::seeTopGenes)
-        }
+    /**
+     * remove RestResourceCall structure and binding among genes
+     */
+    protected override fun doFlattenStructure() : Boolean{
+
+        // check the top structure
+        val resources = groupsView()!!.getAllInGroup(GroupsOfChildren.MAIN).filterIsInstance<RestResourceCalls>()
+
+        if (resources.isEmpty()) return false
+
+        // remove all bindings among genes
+        removeAllBindingAmongGenes()
+
+        val dnsActions = resources.flatMap { it.seeActions(ONLY_DNS)} as List<HostnameResolutionAction>
+        val sqlActions = resources.flatMap { it.seeActions(ONLY_SQL) } as List<SqlAction>
+        val mongoDbActions = resources.flatMap { it.seeActions(ONLY_MONGO) } as List<MongoDbAction>
+
+        val groups = resources.flatMap { it.seeEnterpriseActionGroup() }
+
+        removeResourceCall(resources)
+        addChildrenToGroup(groups, GroupsOfChildren.MAIN)
+
+        addChildrenToGroup(sqlActions, GroupsOfChildren.INITIALIZATION_SQL)
+        addChildrenToGroup(mongoDbActions, GroupsOfChildren.INITIALIZATION_MONGO)
+        addChildrenToGroup(dnsActions, GroupsOfChildren.INITIALIZATION_DNS)
+
+        /*
+            if we move any environment action to the beginning of the individual, it might impact the fitness
+         */
+        return dnsActions.isNotEmpty() || sqlActions.isNotEmpty() || mongoDbActions.isNotEmpty()
+
+        // re-generate local id
+//        resetLocalIdRecursively()
+//        doInitializeLocalId()
     }
 
     enum class ResourceFilter { ALL, NO_SQL, ONLY_SQL, ONLY_SQL_INSERTION, ONLY_SQL_EXISTING }
@@ -121,23 +160,54 @@ class RestIndividual(
      */
     fun seeResource(filter: ResourceFilter) : List<String>{
         return when(filter){
-            ResourceFilter.ALL -> seeInitializingActions().filterIsInstance<DbAction>().map { it.table.name }.plus(
+            ResourceFilter.ALL -> seeInitializingActions().filterIsInstance<SqlAction>().map { it.table.name }.plus(
                 getResourceCalls().map { it.getResourceKey() }
             )
             ResourceFilter.NO_SQL -> getResourceCalls().map { it.getResourceKey() }
-            ResourceFilter.ONLY_SQL -> seeInitializingActions().filterIsInstance<DbAction>().map { it.table.name }
-            ResourceFilter.ONLY_SQL_EXISTING -> seeInitializingActions().filterIsInstance<DbAction>().filter { it.representExistingData }.map { it.table.name }
-            ResourceFilter.ONLY_SQL_INSERTION -> seeInitializingActions().filterIsInstance<DbAction>().filterNot { it.representExistingData }.map { it.table.name }
+            ResourceFilter.ONLY_SQL -> seeInitializingActions().filterIsInstance<SqlAction>().map { it.table.name }
+            ResourceFilter.ONLY_SQL_EXISTING -> seeInitializingActions().filterIsInstance<SqlAction>().filter { it.representExistingData }.map { it.table.name }
+            ResourceFilter.ONLY_SQL_INSERTION -> seeInitializingActions().filterIsInstance<SqlAction>().filterNot { it.representExistingData }.map { it.table.name }
         }
     }
 
+    /**
+     * remove location id among actions used for minimization phase
+     */
+    fun removeAllLinks(){
+        seeMainExecutableActions().forEach { a->
+            a.usePreviousLocationId = null
+            a.saveCreatedResourceLocation = false
+            a.backwardLinkReference = null
+        }
+    }
 
-    override fun size() = seeMainExecutableActions().size
+    fun fixResourceForwardLinks(){
 
+        val actions = seeMainExecutableActions()
+
+        for(i in 0 until actions.size-1){
+            val a = actions[i]
+            if(a.saveCreatedResourceLocation){
+                //anyone after using it?
+                var using = false
+                for(j in (i+1) until actions.size){
+                    if(actions[j].usePreviousLocationId == a.postLocationId()){
+                        using = true
+                        break
+                    }
+                }
+                if(!using){
+                    //no point in keeping it if none use it
+                    a.saveCreatedResourceLocation = false
+                }
+            }
+        }
+
+    }
 
     //FIXME refactor
     override fun verifyInitializationActions(): Boolean {
-        return DbActionUtils.verifyActions(seeInitializingActions().filterIsInstance<DbAction>())
+        return SqlActionUtils.verifyActions(seeInitializingActions().filterIsInstance<SqlAction>())
     }
 
     override fun copy(copyFilter: TraceableElementCopyFilter): RestIndividual {
@@ -162,10 +232,10 @@ class RestIndividual(
      * TODO not sure whether build binding between fk and pk
      */
     fun repairDbActionsInCalls(){
-        val previous = mutableListOf<DbAction>()
+        val previous = mutableListOf<SqlAction>()
         getResourceCalls().forEach { c->
             c.repairFK(previous)
-            previous.addAll(c.seeActions(ONLY_SQL) as List<DbAction>)
+            previous.addAll(c.seeActions(ONLY_SQL) as List<SqlAction>)
         }
     }
 
@@ -173,6 +243,17 @@ class RestIndividual(
      * @return all groups of actions for resource handling
      */
     fun getResourceCalls() : List<RestResourceCalls> = children.filterIsInstance<RestResourceCalls>()
+
+
+    /**
+     * @return a list of EnterpriseActionGroups under GroupsOfChildren.MAIN
+     * if the list is empty, it indicates that `doFlattenStructure` has been processed yet then return null
+     */
+    fun getFlattenMainEnterpriseActionGroup() : List<EnterpriseActionGroup<RestCallAction>>?{
+        val groups = groupsView()!!.getAllInGroup(GroupsOfChildren.MAIN).filterIsInstance<EnterpriseActionGroup<*>>()
+        if (groups.isEmpty()) return null
+        return groups as List<EnterpriseActionGroup<RestCallAction>>
+    }
 
     /**
      * return all the resource calls in this individual, with their index in the children list
@@ -193,14 +274,12 @@ class RestIndividual(
         if(!getIndexedResourceCalls().keys.contains(position))
             throw IllegalArgumentException("position is out of range of list")
         val removed = killChildByIndex(getFirstIndexOfRestResourceCalls() + position) as RestResourceCalls
-        removed.removeThisFromItsBindingGenes()
     }
 
     fun removeResourceCall(remove: List<RestResourceCalls>) {
         if(!getResourceCalls().containsAll(remove))
             throw IllegalArgumentException("specified rest calls are not part of this individual")
         killChildren(remove)
-        remove.forEach { it.removeThisFromItsBindingGenes() }
     }
 
     /**
@@ -216,7 +295,7 @@ class RestIndividual(
         }
     }
 
-    private fun getFirstIndexOfRestResourceCalls() = max(0, max(children.indexOfLast { it is DbAction }+1, children.indexOfFirst { it is RestResourceCalls }))
+    private fun getFirstIndexOfRestResourceCalls() = max(0, max(children.indexOfLast { it is EnvironmentAction }+1, children.indexOfFirst { it is RestResourceCalls }))
 
     /**
      * replace the resourceCall at [position] with [resourceCalls]
@@ -324,10 +403,24 @@ class RestIndividual(
 
 
     override fun getInsertTableNames(): List<String> {
-        return seeDbActions().filterNot { it.representExistingData }.map { it.table.name }
+        return seeSqlDbActions().filterNot { it.representExistingData }.map { it.table.name }
     }
 
     override fun seeMainExecutableActions(): List<RestCallAction> {
         return super.seeMainExecutableActions() as List<RestCallAction>
+    }
+
+    /**
+     * Finds the first index of a main REST action with a given verb and path among actions in the individual.
+     *
+     * @return negative value if not found
+     */
+    fun getActionIndex(
+        actionVerb: HttpVerb,
+        path: RestPath
+    ) : Int {
+        return seeMainExecutableActions().indexOfFirst  {
+            it.verb == actionVerb && it.path.isEquivalent(path)
+        }
     }
 }

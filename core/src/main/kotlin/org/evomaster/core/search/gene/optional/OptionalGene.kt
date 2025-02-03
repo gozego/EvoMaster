@@ -1,12 +1,11 @@
 package org.evomaster.core.search.gene.optional
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.search.gene.Gene
-import org.evomaster.core.search.gene.root.CompositeFixedGene
 import org.evomaster.core.search.gene.utils.GeneUtils
 import org.evomaster.core.search.impact.impactinfocollection.value.OptionalGeneImpact
-import org.evomaster.core.search.service.AdaptiveParameterControl
 import org.evomaster.core.search.service.Randomness
 import org.evomaster.core.search.service.mutator.MutationWeightControl
 import org.evomaster.core.search.service.mutator.genemutation.AdditionalGeneMutationInfo
@@ -31,11 +30,11 @@ import org.slf4j.LoggerFactory
  *                      By default, it can be used during whole search (ie, 1.0).
  */
 class OptionalGene(name: String,
-                   val gene: Gene,
-                   var isActive: Boolean = true,
+                   gene: Gene,
+                   isActive: Boolean = true,
                    var requestSelection: Boolean = false,
                    var searchPercentageActive: Double = 1.0
-) : CompositeFixedGene(name, gene) {
+) : SelectableWrapperGene(name, gene, isActive) {
 
 
     companion object{
@@ -43,11 +42,6 @@ class OptionalGene(name: String,
         private const val INACTIVE = 0.01
     }
 
-    /**
-     * In some cases, we might want to prevent this gene from being active
-     */
-    var selectable = true
-        private set
 
     init {
         if(searchPercentageActive < 0 || searchPercentageActive > 1){
@@ -56,14 +50,11 @@ class OptionalGene(name: String,
     }
 
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
-    fun forbidSelection(){
-        selectable = false
-        isActive = false
-    }
+
 
     override fun copyContent(): Gene {
         val copy = OptionalGene(name, gene.copy(), isActive, requestSelection, searchPercentageActive)
@@ -71,26 +62,32 @@ class OptionalGene(name: String,
         return copy
     }
 
-    override fun isMutable(): Boolean {
-        return selectable
-    }
 
-    override fun <T> getWrappedGene(klass: Class<T>) : T?  where T : Gene{
-        if(this.javaClass == klass){
-            return this as T
-        }
-        return gene.getWrappedGene(klass)
-    }
-
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is OptionalGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
-        this.isActive = other.isActive
-        this.selectable = other.selectable
-        this.requestSelection = other.requestSelection
-        this.searchPercentageActive = other.searchPercentageActive
-        this.gene.copyValueFrom(other.gene)
+
+        return updateValueOnlyIfValid(
+            {
+                val ok = gene.copyValueFrom(other.gene)
+                if (ok){
+                    this.isActive = other.isActive
+                    this.selectable = other.selectable
+                    this.requestSelection = other.requestSelection
+                    this.searchPercentageActive = other.searchPercentageActive
+                }
+                ok
+            }, false
+        )
+    }
+
+    override fun setFromStringValue(value: String) : Boolean{
+        val modified = gene.setFromStringValue(value)
+        if(modified){
+            isActive = true
+        }
+        return modified
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
@@ -103,31 +100,7 @@ class OptionalGene(name: String,
                 && this.searchPercentageActive == other.searchPercentageActive
     }
 
-    override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
 
-        if(!gene.initialized && gene.isMutable()){
-            //make sure that, if not initialized, to randomize it, to make sure constraints are satisfied
-            gene.randomize(randomness, false)
-        }
-
-        if(!selectable){
-            return
-        }
-
-        if (!tryToForceNewValue) {
-            isActive = randomness.nextBoolean()
-            if(gene.isMutable()) {
-                gene.randomize(randomness, false)
-            }
-        } else {
-
-            if (randomness.nextBoolean() || !gene.isMutable()) {
-                isActive = !isActive
-            } else {
-                gene.randomize(randomness, true)
-            }
-        }
-    }
 
     override fun customShouldApplyShallowMutation(
         randomness: Randomness,
@@ -156,12 +129,7 @@ class OptionalGene(name: String,
         throw IllegalArgumentException("impact is null or not OptionalGeneImpact ${additionalGeneMutationInfo?.impact}")
     }
 
-    override fun mutablePhenotypeChildren(): List<Gene> {
 
-        if (!isActive || !gene.isMutable()) return emptyList()
-
-        return listOf(gene)
-    }
 
     override fun adaptiveSelectSubsetToMutate(randomness: Randomness, internalGenes: List<Gene>, mwc: MutationWeightControl, additionalGeneMutationInfo: AdditionalGeneMutationInfo): List<Pair<Gene, AdditionalGeneMutationInfo?>> {
         if (additionalGeneMutationInfo.impact != null && additionalGeneMutationInfo.impact is OptionalGeneImpact){
@@ -172,15 +140,7 @@ class OptionalGene(name: String,
         throw IllegalArgumentException("impact is null or not OptionalGeneImpact")
     }
 
-    override fun shallowMutate(randomness: Randomness, apc: AdaptiveParameterControl, mwc: MutationWeightControl, selectionStrategy: SubsetGeneMutationSelectionStrategy, enableAdaptiveGeneMutation: Boolean, additionalGeneMutationInfo: AdditionalGeneMutationInfo?) : Boolean{
 
-        isActive = !isActive
-        if (enableAdaptiveGeneMutation){
-            //TODO MAN further check
-        }
-
-        return true
-    }
 
 
     override fun getValueAsPrintableString(previousGenes: List<Gene>, mode: GeneUtils.EscapeMode?, targetFormat: OutputFormat?, extraCheck: Boolean): String {
@@ -196,28 +156,14 @@ class OptionalGene(name: String,
         return gene.getValueAsRawString()
     }
 
-    override fun getVariableName() = gene.getVariableName()
-
-
-
-    override fun mutationWeight(): Double {
-        return 1.0 + gene.mutationWeight()
-    }
 
     override fun bindValueBasedOn(gene: Gene): Boolean {
         if (gene is OptionalGene) isActive = gene.isActive
         return ParamUtil.getValueGene(this).bindValueBasedOn(ParamUtil.getValueGene(gene))
     }
 
-    override fun isPrintable(): Boolean {
-        /*
-            A non active gene would end up in being an empty string, that could still be part of the phenotype.
-            For example, when dealing with JavaScript, we could have array with empty elements, like
-            x = [,,]
-            which is different from
-            x = [null,null,null]
-            as in the former case the values are 'undefined'
-         */
-        return !isActive || gene.isPrintable()
+    override fun isChildUsed(child: Gene) : Boolean {
+        verifyChild(child)
+        return isActive
     }
 }

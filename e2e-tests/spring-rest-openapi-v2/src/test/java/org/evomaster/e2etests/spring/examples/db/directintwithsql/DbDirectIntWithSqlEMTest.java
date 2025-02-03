@@ -5,14 +5,14 @@ import com.google.inject.Key;
 import com.google.inject.TypeLiteral;
 import org.evomaster.core.EMConfig;
 import org.evomaster.core.Main;
-import org.evomaster.core.database.DbAction;
+import org.evomaster.core.sql.SqlAction;
 import org.evomaster.core.problem.rest.HttpVerb;
 import org.evomaster.core.problem.rest.RestCallAction;
 import org.evomaster.core.problem.rest.RestCallResult;
 import org.evomaster.core.problem.rest.RestIndividual;
 import org.evomaster.core.problem.rest.service.ResourceSampler;
 import org.evomaster.core.remote.service.RemoteController;
-import org.evomaster.core.search.EvaluatedAction;
+import org.evomaster.core.search.action.EvaluatedAction;
 import org.evomaster.core.search.EvaluatedIndividual;
 import org.evomaster.core.search.FitnessValue;
 import org.evomaster.core.search.Solution;
@@ -102,8 +102,8 @@ public class DbDirectIntWithSqlEMTest extends DbDirectIntWithSqlTestBase {
                 "--createTests", "true",
                 "--seed", "42",
                 "--sutControllerPort", "" + controllerPort,
-                "--maxActionEvaluations", "1",
-                "--stoppingCriterion", "FITNESS_EVALUATIONS",
+                "--maxEvaluations", "1",
+                "--stoppingCriterion", "ACTION_EVALUATIONS",
                 "--heuristicsForSQL", "true",
                 "--generateSqlDataWithSearch", "true",
                 "--maxTestSize", "1",
@@ -126,7 +126,7 @@ public class DbDirectIntWithSqlEMTest extends DbDirectIntWithSqlTestBase {
         FitnessFunction<RestIndividual> ff = injector.getInstance(Key.get(
                 new TypeLiteral<FitnessFunction<RestIndividual>>() {
                 }));
-        EvaluatedIndividual ei = ff.calculateCoverage(ind, Collections.emptySet());
+        EvaluatedIndividual ei = ff.calculateCoverage(ind, Collections.emptySet(), null);
         assertNotNull(ei);
 
         FitnessValue noDataFV = ei.getFitness();
@@ -140,7 +140,7 @@ public class DbDirectIntWithSqlEMTest extends DbDirectIntWithSqlTestBase {
 
         //now, try to execute an action in which as well we add SQL data
 
-        List<DbAction> insertions = sampler.sampleSqlInsertion("DB_DIRECT_INT_ENTITY", Collections.singleton("*"));
+        List<SqlAction> insertions = sampler.sampleSqlInsertion("DB_DIRECT_INT_ENTITY", Collections.singleton("*"));
         assertEquals(1, insertions.size());
 
         //extract the x/y values from the random call
@@ -170,7 +170,7 @@ public class DbDirectIntWithSqlEMTest extends DbDirectIntWithSqlTestBase {
         RestIndividual withSQL = (RestIndividual) ind.copy(); //new RestIndividual(ind.seeActions(), ind.getSampleType(), insertions, null, Traceable.DEFAULT_INDEX);
         withSQL.addInitializingDbActions(0,insertions);
 
-        ei = ff.calculateCoverage(withSQL, noDataFV.getViewOfData().keySet());
+        ei = ff.calculateCoverage(withSQL, noDataFV.getViewOfData().keySet(), null);
         assertNotNull(ei);
 
         //should have better heuristic
@@ -201,7 +201,7 @@ public class DbDirectIntWithSqlEMTest extends DbDirectIntWithSqlTestBase {
                     }
                 });
 
-        ei = ff.calculateCoverage(withSQL, Collections.emptySet());
+        ei = ff.calculateCoverage(withSQL, Collections.emptySet(), null);
         assertNotNull(ei);
 
         //As SQL data is returned, we get no heuristic, and so worst value

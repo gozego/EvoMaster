@@ -12,9 +12,10 @@ import org.evomaster.core.search.service.mutator.genemutation.AdditionalGeneMuta
 import org.evomaster.core.search.service.mutator.genemutation.SubsetGeneMutationSelectionStrategy
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.util.Collections
 
 /**
- * A gene that holds many potenial genes (genotype) but
+ * A gene that holds many potential genes (genotype) but
  * only one is active at any time (phenotype). The list
  * of gene choices cannot be empty.
  */
@@ -22,7 +23,11 @@ import org.slf4j.LoggerFactory
 class ChoiceGene<T>(
     name: String,
     private val geneChoices: List<T>,
-    activeChoice: Int = 0
+    activeChoice: Int = 0,
+    /**
+     * Potentially, associate different probabilities for the different choices
+     */
+    probabilities: List<Double>? = null
 
 ) : CompositeFixedGene(name, geneChoices) where T : Gene {
 
@@ -33,6 +38,8 @@ class ChoiceGene<T>(
     var activeGeneIndex: Int = activeChoice
         private set
 
+    private val probabilities = probabilities?.toList() //make a copy
+
     init {
         if (geneChoices.isEmpty()) {
             throw IllegalArgumentException("The list of gene choices cannot be empty")
@@ -41,41 +48,59 @@ class ChoiceGene<T>(
         if (activeChoice < 0 || activeChoice >= geneChoices.size) {
             throw IllegalArgumentException("Active choice must be between 0 and ${geneChoices.size - 1}")
         }
+        if(probabilities != null && probabilities.size != geneChoices.size){
+            throw IllegalArgumentException("If probabilities are defined, then they must be same number as the genes")
+        }
     }
 
 
+    fun selectActiveGene(index: Int){
+        if (index < 0 || index >= geneChoices.size) {
+            throw IllegalArgumentException("Index $index must be between 0 and ${geneChoices.size - 1}")
+        }
+        activeGeneIndex = index
+    }
+
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
-        activeGeneIndex = randomness.nextInt(geneChoices.size)
+
+        activeGeneIndex = if(probabilities != null){
+            randomness.chooseByProbability(probabilities.mapIndexed { index, d -> index to d }.toMap())
+        } else {
+            randomness.nextInt(geneChoices.size)
+        }
 
         /*
             Even the non-selected genes need to be randomized, otherwise could be let in
-            a inconsistent state
+            an inconsistent state
          */
         if(!initialized){
-        geneChoices
-            .filter { it.isMutable() }
-            .forEach { it.randomize(randomness, tryToForceNewValue) }
+            geneChoices
+                .filter { it.isMutable() }
+                .forEach { it.randomize(randomness, tryToForceNewValue) }
         } else {
-            val g = geneChoices[activeGeneIndex]
+            val g = activeGene()
             if(g.isMutable()){
                 g.randomize(randomness, tryToForceNewValue)
             }
         }
     }
 
+    fun activeGene() = geneChoices[activeGeneIndex]
+
     /**
      * TODO This method must be implemented to reflect usage
      * of the selectionStrategy and the additionalGeneMutationInfo
      */
     override fun mutablePhenotypeChildren(): List<Gene> {
-        return listOf(geneChoices[activeGeneIndex])
+        return listOf(activeGene()).filter { it.isMutable() }
     }
 
-    override fun <T> getWrappedGene(klass: Class<T>) : T?  where T : Gene{
-        if(this.javaClass == klass){
+    @Suppress("BOUNDS_NOT_ALLOWED_IF_BOUNDED_BY_TYPE_PARAMETER")
+    override fun <T,K> getWrappedGene(klass: Class<K>, strict: Boolean) : T?  where T : Gene, T: K{
+        if(matchingClass(klass,strict)){
             return this as T
         }
-        return geneChoices[activeGeneIndex].getWrappedGene(klass)
+        return activeGene().getWrappedGene(klass)
     }
 
 
@@ -128,7 +153,7 @@ class ChoiceGene<T>(
         targetFormat: OutputFormat?,
         extraCheck: Boolean
     ): String {
-        return geneChoices[activeGeneIndex]
+        return activeGene()
             .getValueAsPrintableString(previousGenes, mode, targetFormat, extraCheck)
     }
 
@@ -136,28 +161,55 @@ class ChoiceGene<T>(
      * Returns the value of the active gene as a raw string
      */
     override fun getValueAsRawString(): String {
-        return geneChoices[activeGeneIndex]
+        return activeGene()
             .getValueAsRawString()
     }
 
     /**
      * Copies the value of the other gene. The other gene
-     * has to be a [ChoiceGene] with the same number
-     * of gene choices. The value of each gene choice
-     * is also copied.
+     * does not have to be [ChoiceGene].
      */
-    override fun copyValueFrom(other: Gene) {
-        if (other !is ChoiceGene<*>) {
-            throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
-        } else if (geneChoices.size != other.geneChoices.size) {
-            throw IllegalArgumentException("Cannot copy value from another choice gene with  ${other.geneChoices.size} choices (current gene has ${geneChoices.size} choices)")
+    override fun copyValueFrom(other: Gene): Boolean {
+
+        val x = if(other is ChoiceGene<*>){
+            other.activeGene()
         } else {
-            this.activeGeneIndex = other.activeGeneIndex
-            for (i in geneChoices.indices) {
-                this.geneChoices[i].copyValueFrom(other.geneChoices[i])
+            other
+        }
+
+        for(i in geneChoices.indices){
+            val g = geneChoices[i]
+            /*
+                TODO this is bit limited... what about if there are wrapper genes involved?
+             */
+            if(g.javaClass == x.javaClass){
+                val updated = updateValueOnlyIfValid(
+                    {
+                        this.activeGeneIndex = i
+                        g.copyValueFrom(x)
+                    }, true
+                )
+                if(updated){
+                    return true
+                }
             }
         }
+
+        return false
     }
+
+    override fun setFromStringValue(value: String): Boolean {
+        for(i in geneChoices.indices){
+            val g = geneChoices[i]
+            val updated = g.setFromStringValue(value)
+            if(updated){
+                activeGeneIndex = i
+                return true
+            }
+        }
+        return false
+    }
+
 
     /**
      * Checks that the other gene is another ChoiceGene,
@@ -205,15 +257,19 @@ class ChoiceGene<T>(
     override fun copyContent(): Gene = ChoiceGene(
         name,
         activeChoice = this.activeGeneIndex,
-        geneChoices = this.geneChoices.map { it.copy() }.toList()
+        geneChoices = this.geneChoices.map { it.copy() }.toList(),
+        probabilities = probabilities // immutable
     )
 
     /**
      * Checks that the active gene is the one locally valid
      */
-    override fun isLocallyValid() = geneChoices.all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() = true
 
     override fun isPrintable() = this.geneChoices[activeGeneIndex].isPrintable()
 
-
+    override fun isChildUsed(child: Gene) : Boolean{
+        verifyChild(child)
+        return child == geneChoices[activeGeneIndex]
+    }
 }

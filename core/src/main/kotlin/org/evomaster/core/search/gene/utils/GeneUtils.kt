@@ -1,13 +1,20 @@
 package org.evomaster.core.search.gene.utils
 
 import org.apache.commons.text.StringEscapeUtils
+import org.evomaster.client.java.instrumentation.shared.TaintInputName
+import org.evomaster.core.StaticCounter
 import org.evomaster.core.output.OutputFormat
+import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.search.gene.*
-import org.evomaster.core.search.gene.collection.ArrayGene
-import org.evomaster.core.search.gene.collection.TupleGene
-import org.evomaster.core.search.gene.optional.OptionalGene
+import org.evomaster.core.search.gene.collection.*
+import org.evomaster.core.search.gene.collection.TaintedMapGene.Companion
+import org.evomaster.core.search.gene.numeric.*
+import org.evomaster.core.search.gene.optional.*
 import org.evomaster.core.search.gene.placeholder.CycleObjectGene
 import org.evomaster.core.search.gene.placeholder.LimitObjectGene
+import org.evomaster.core.search.gene.sql.SqlAutoIncrementGene
+import org.evomaster.core.search.gene.sql.SqlPrimaryKeyGene
+import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.service.AdaptiveParameterControl
 import org.evomaster.core.search.service.Randomness
 import org.slf4j.Logger
@@ -26,6 +33,15 @@ object GeneUtils {
 
 
     /**
+     * @return whether the gene contains inactive optional gene
+     */
+    fun isInactiveOptionalGene(gene: Gene): Boolean{
+        val optional = gene.getWrappedGene(OptionalGene::class.java)?:return false
+
+        return !optional.isActive
+    }
+
+    /**
      * The [EscapeMode] enum is here to clarify the supported types of Escape modes.
      *
      * Different purposes require different modes of escape (e.g. URI may require percent encoding). This is to
@@ -42,6 +58,7 @@ object GeneUtils {
         SQL,
         ASSERTION,
         EXPECTATION,
+        EJSON,
         JSON,
         TEXT,
         XML,
@@ -59,21 +76,21 @@ object GeneUtils {
     }
 
     fun getDelta(
-        randomness: Randomness,
-        apc: AdaptiveParameterControl,
-        range: Long = Long.MAX_VALUE,
-        start: Int = intpow2.size,
-        end: Int = 10
+            randomness: Randomness,
+            apc: AdaptiveParameterControl,
+            range: Long = Long.MAX_VALUE,
+            start: Int = intpow2.size,
+            end: Int = 10
     ): Int {
 
-        if (range < 1){
+        if (range < 1) {
             throw IllegalArgumentException("cannot generate delta with the range ($range) which is less than 1")
         }
 
         val maxIndex = apc.getExploratoryValue(start, end)
 
         var n = 0
-        for (i in 0 until (maxIndex -1)) {
+        for (i in 0 until (maxIndex - 1)) {
             n = i + 1
             // check with Andrea regarding n instead of i
             if (intpow2[n] > range) {
@@ -160,7 +177,7 @@ object GeneUtils {
             EscapeMode.SQL -> applySqlEscapes(string, format)
             EscapeMode.ASSERTION -> applyAssertionEscapes(string, format)
             EscapeMode.EXPECTATION -> applyExpectationEscapes(string, format)
-            EscapeMode.JSON -> applyJsonEscapes(string, format)
+            EscapeMode.JSON, EscapeMode.EJSON-> applyJsonEscapes(string, format)
             EscapeMode.TEXT -> applyTextEscapes(string, format)
             EscapeMode.NONE,
             EscapeMode.X_WWW_FORM_URLENCODED,
@@ -171,6 +188,7 @@ object GeneUtils {
             EscapeMode.GQL_NONE_MODE,
             EscapeMode.GQL_INPUT_ARRAY_MODE,
             EscapeMode.GQL_INPUT_MODE -> string
+
             EscapeMode.GQL_STR_VALUE -> applyGQLStr(string, format)
             EscapeMode.BODY -> applyBodyEscapes(string, format)
             EscapeMode.XML -> StringEscapeUtils.escapeXml10(string)
@@ -182,12 +200,12 @@ object GeneUtils {
 
     fun applyJsonEscapes(string: String, format: OutputFormat): String {
         val ret = string
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\b", "\\b")
-            .replace("\t", "\\t")
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\b", "\\b")
+                .replace("\t", "\\t")
 
         return ret
     }
@@ -198,15 +216,15 @@ object GeneUtils {
      */
     private fun applyGQLStr(string: String, format: OutputFormat): String {
         val replace = string
-            .replace("\"", "\\\\\"")
+                .replace("\"", "\\\\\"")
 
         return replace
     }
 
     private fun applyExpectationEscapes(string: String, format: OutputFormat = OutputFormat.JAVA_JUNIT_4): String {
         val ret = string.replace("\\", """\\\\""")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
 
         when {
             format.isKotlin() -> return ret.replace("\$", "\\\$")
@@ -217,8 +235,8 @@ object GeneUtils {
     private fun applyUriEscapes(string: String, format: OutputFormat): String {
         //val ret = URLEncoder.encode(string, "utf-8")
         val ret = string.replace("\\", "%5C")
-            .replace("\"", "%22")
-            .replace("\n", "%0A")
+                .replace("\"", "%22")
+                .replace("\n", "%0A")
 
         if (format.isKotlin()) return ret.replace("\$", "%24")
         else return ret
@@ -226,11 +244,11 @@ object GeneUtils {
 
     private fun applyTextEscapes(string: String, format: OutputFormat): String {
         val ret = string.replace("\\", """\\""")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\b", "\\b")
-            .replace("\t", "\\t")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\b", "\\b")
+                .replace("\t", "\\t")
 
         when {
             format.isKotlin() -> return ret.replace("\$", "\\\$")
@@ -256,11 +274,11 @@ object GeneUtils {
 //                .split(timeRegEx)[0] //split off anything after specific timestamps that might differ
 
         val ret = string.replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\b", "\\b")
-            .replace("\t", "\\t")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\b", "\\b")
+                .replace("\t", "\\t")
 
         if (format.isKotlin()) return ret.replace("\$", "\\\$")
         else return ret
@@ -268,14 +286,14 @@ object GeneUtils {
 
     private fun applyBodyEscapes(string: String, format: OutputFormat): String {
         val ret = string.replace("\\", """\\""")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\b", "\\b")
-            .replace("\t", "\\t")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\b", "\\b")
+                .replace("\t", "\\t")
 
         if (format.isKotlin()) return ret.replace("\$", "\\\$")
-            .replace("\\\\u", "\\u")
+                .replace("\\\\u", "\\u")
         //.replace("\$", "\${\'\$\'}")
         //ret.replace("\$", "\\\$")
         else return ret.replace("\\\\u", "\\u")
@@ -293,7 +311,7 @@ object GeneUtils {
 
     private fun applySqlEscapes(string: String, format: OutputFormat): String {
         val ret = string.replace("\\", """\\""")
-            .replace("\"", "\\\\\"")
+                .replace("\"", "\\\\\"")
 
         if (format.isKotlin()) return ret.replace("\$", "\\\$")
         //.replace("\$", "\${\'\$\'}")
@@ -323,14 +341,17 @@ object GeneUtils {
 
         loop@ while (p != null) {
             when (p) {
-                is OptionalGene -> {
+                //TODO possibly include ChoiceGene here?
+                is SelectableWrapperGene -> {
                     p.forbidSelection()
                     break@loop
                 }
+
                 is ArrayGene<*> -> {
                     p.forceToOnlyEmpty()
                     break@loop
                 }
+
                 else -> p = p.parent
             }
         }
@@ -375,7 +396,12 @@ object GeneUtils {
     }
 
 
-
+    /**
+     * Check if there is any cycle, and, if so, if it has been prevented by deactivating something
+     * in its ancestors.
+     * If this returns true, then we have a major problem, as it would mean a Cycle object ends up
+     * in the phenotype, breaking things.
+     */
     fun hasNonHandledCycles(gene: Gene): Boolean {
 
         val cycles = gene.flatView().filterIsInstance<CycleObjectGene>()
@@ -388,11 +414,15 @@ object GeneUtils {
             var p = c.parent
             loop@ while (p != null) {
                 when {
-                    (p is OptionalGene && !p.selectable) ||
+                    /*
+                        TODO possibly include ChoiceGene here?
+                     */
+                    (p is SelectableWrapperGene && !p.selectable) ||
                             (p is ArrayGene<*> && p.maxSize == 0)
                     -> {
                         break@loop
                     }
+
                     else -> p = p.parent
                 }
             }
@@ -459,79 +489,142 @@ object GeneUtils {
     }
 
     /**
-     * force at least one boolean to be selected
+     * force at least one boolean to be selected.
+     * This is essential because, when making queries in which we ask for Object info, at
+     * least 1 field MUST be selected. Otherwise, the query would not be syntactically valid.
+     *
+     * @return [true] if it was possible to make sure at least one field is selected.
+     *          If not, the caller of this function MUST guarantee that this object is NOT used
+     *          in the phenotype.
+     *          Note: it can happen that some objects are not "usable" when we put limits to the
+     *          depth of the queried trees.
      */
-    fun repairBooleanSelection(obj: ObjectGene) {
+    fun repairBooleanSelection(obj: ObjectGene): Boolean {
 
         if (obj.fields.isEmpty()
             || obj.fields.count { it !is OptionalGene && it !is BooleanGene && it !is TupleGene } > 0
-        ) {
+        ) {//this will include optional tuple
             throw IllegalArgumentException("There should be at least 1 field, and they must be all optional or boolean or tuple")
         }
 
+        /*
+        * Filtering fields that are already on, and that would imply we have nothing to do.
+        */
         val selected = obj.fields.filter {
             ((it is OptionalGene && it.isActive) ||
                     (it is BooleanGene && it.value) ||
-                    (it is OptionalGene && it.gene is TupleGene && it.gene.lastElementTreatedSpecially && isLastSelected(it.gene)) ||
+                    (it is OptionalGene && it.isActive  && it.gene is TupleGene && it.gene.lastElementTreatedSpecially && isLastSelected(
+                        it.gene
+                    )) ||
                     (it is TupleGene && it.lastElementTreatedSpecially && isLastSelected(it))
                     )
         }
 
+        var failedRepairCount = 0
+
+        /*
+        * There are some fields that are already on.
+        * However, we must guarantee that their children are fine as well, recursively.
+        * If they are not fine, we need to deactivate them.
+        * However, might end up we deactivate everything...
+        */
         if (selected.isNotEmpty()) {
             //it is fine, but we still need to make sure selected objects are fine
             selected.forEach {
-                if ((it is OptionalGene && it.gene is ObjectGene && (it.gene !is CycleObjectGene || it.gene !is LimitObjectGene))
-                ) {
-                    repairBooleanSelection(it.gene)
-                } else if ( //looking into objects inside a tuple
-                    isTupleOptionalObjetNotCycleNotLimit(it)) {
-                    repairBooleanSelection(((it as TupleGene).elements.last() as OptionalGene).gene as ObjectGene)
-                }
-            }
-        } else {
-            //must select at least one
-            val candidates = obj.fields.filter {
-                (it is OptionalGene && it.selectable) || it is BooleanGene ||
-                        (it is TupleGene && it.lastElementTreatedSpecially && isLastCandidate(it))
-            }
-            assert(candidates.isNotEmpty())
-
-            // maybe do at random?
-            val selectedGene = candidates[0]
-            if (selectedGene is OptionalGene) {
-                selectedGene.isActive = true
-                if (selectedGene.gene is ObjectGene) {
-                    assert(selectedGene.gene !is CycleObjectGene)
-                    repairBooleanSelection(selectedGene.gene)
-                }
-            } else
-                if (selectedGene is TupleGene) {
-                    val lastElement = selectedGene.elements.last()
-                    repairTupleLastElement(lastElement)
+                if ((it is OptionalGene)) {
+                    if (it.gene is ObjectGene) {
+                        if (!repairBooleanSelection(it.gene)) {
+                            it.isActive = false
+                            failedRepairCount++
+                        }
+                } else if (it.gene is TupleGene && isLastElementInTupleObjetNotCycleNotLimit(it.gene)) {
+                    if (!repairBooleanSelection(it.gene.elements.last() as ObjectGene)) {
+                            failedRepairCount++
+                        }
+                    }
                 } else
-                    (selectedGene as BooleanGene).value = true
+                    if (it is TupleGene && isLastElementInTupleObjetNotCycleNotLimit(it)){
+                        if (!repairBooleanSelection(it.elements.last() as ObjectGene)) {
+                            failedRepairCount++
+                        }
+                    }
+            }
         }
+
+        if (selected.isEmpty() || selected.size == failedRepairCount) {
+            /*
+             * we did not find fields that are already selected, or we ended up deselecting all of them.
+             * must select at least one among the others that were off
+             */
+            val candidates = obj.fields.filter {
+                (it is OptionalGene && it.selectable && !it.isActive)
+                        || (it is BooleanGene && !it.value)
+                        || (it is TupleGene && it.lastElementTreatedSpecially && isLastCandidate(it))
+            }
+
+            /*
+            * What if we do not have candidates? we could not recycle any gene !.
+            * In this case we must deactivate the ancestor of the gene (somehow, ex: put the optional as non-active) and return false
+            * */
+            if (candidates.isEmpty()) {
+                return false
+            }
+
+            for (selectedGene in candidates) {
+                if (selectedGene is OptionalGene && selectedGene.selectable) {
+                    selectedGene.isActive = true
+                    if (selectedGene.gene is ObjectGene) {
+                        if (!repairBooleanSelection(selectedGene.gene)) {
+                            selectedGene.isActive = false
+                        }
+                        return true //we just need one
+                    } else if (selectedGene.gene is TupleGene){
+                        var ok = true
+                        if(selectedGene.gene.lastElementTreatedSpecially){
+                            val lastElement = selectedGene.gene.elements.last()
+                            ok = repairTupleLastElement(lastElement)
+                        }
+                        return ok
+                    }
+                } else if (selectedGene is TupleGene) {
+                    var ok = true
+                    if(selectedGene.lastElementTreatedSpecially) {
+                        val lastElement = selectedGene.elements.last()
+                        ok = repairTupleLastElement(lastElement)
+                    }
+                    return ok
+                } else {
+                    (selectedGene as BooleanGene).value = true
+                    return true
+                }
+            }
+
+            return false //we failed to fix any
+        }
+
+        //reached if we can repair the gene.
+        return true
     }
 
-    private fun repairTupleLastElement(lastElement: Gene) {
-        if (lastElement is OptionalGene) {
-            lastElement.isActive = true
-            if (lastElement.gene is ObjectGene) {
-                assert(lastElement.gene !is CycleObjectGene)
-                repairBooleanSelection(lastElement.gene)
-            }
-        } else
-            if (lastElement is BooleanGene)
+    private fun repairTupleLastElement(lastElement: Gene): Boolean {
+        if ((lastElement is ObjectGene) && (repairBooleanSelection(lastElement)))
+            return true //we just need one
+        else
+            if (lastElement is BooleanGene) {
                 lastElement.value = true
+                return true
+            }
+
+        return false //should never be reached
     }
 
     private fun shouldApplyBooleanSelection(gene: Gene) =
-        (gene is OptionalGene && gene.gene is ObjectGene)
-                || gene is ObjectGene
-                || (gene is ArrayGene<*> && gene.template is ObjectGene)
-                || (gene is ArrayGene<*> && gene.template is OptionalGene && gene.template.gene is ObjectGene)
-                || (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is OptionalGene && gene.gene.template.gene is ObjectGene)
-                || (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is ObjectGene)
+            (gene is OptionalGene && gene.gene is ObjectGene)
+                    || gene is ObjectGene
+                    || (gene is ArrayGene<*> && gene.template is ObjectGene)
+                    || (gene is ArrayGene<*> && gene.template is OptionalGene && gene.template.gene is ObjectGene)
+                    || (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is OptionalGene && gene.gene.template.gene is ObjectGene)
+                    || (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is ObjectGene)
 
     private fun handleBooleanSelection(gene: Gene): Gene {
 
@@ -548,36 +641,41 @@ object GeneUtils {
                     if (gene.gene is ArrayGene<*>)
                         handleBooleanSelection(gene.gene.template)
                     else
-                        if (gene.gene is TupleGene && gene.gene.lastElementTreatedSpecially)//opt tuple
-                            TupleGene(
-                                gene.name,
-                                gene.gene.elements.dropLast(1).plus(handleBooleanSelection(gene.gene.elements.last())),
-                                lastElementTreatedSpecially = true
-                            ) else if (gene.gene is TupleGene)
-                            gene.gene else if (gene.gene is LimitObjectGene)  gene else if (gene.gene is CycleObjectGene) gene
+                        if (gene.gene is TupleGene && gene.gene.lastElementTreatedSpecially) //opt tuple
+                                //putting the tuple into optional gene
+                                OptionalGene(gene.name, handleBooleanSelection(gene.gene))
+                         else if (gene.gene is TupleGene) gene//since it contains only inputs
+                        else if (gene.gene is LimitObjectGene) gene
+                        else if (gene.gene is CycleObjectGene) gene
                         else
                         // on by default, but can be deselected during the search
                             BooleanGene(gene.name, true)
             }
+
             is CycleObjectGene -> {
                 gene
             }
+
             is LimitObjectGene -> {
                 gene
             }
+
             is ObjectGene -> {
                 //need to look at each field
                 ObjectGene(gene.name, gene.fields.map { handleBooleanSelection(it) })
             }
+
             is ArrayGene<*> -> handleBooleanSelection(gene.template)
             is TupleGene -> {//not opt tuple
                 if (gene.lastElementTreatedSpecially)
+                    //returning a tuple, with the last element handled by the Boolean selection
                     TupleGene(
-                        gene.name,
-                        gene.elements.dropLast(1).plus(handleBooleanSelection(gene.elements.last())),
-                        lastElementTreatedSpecially = true
-                    ) else gene
+                            gene.name,
+                            gene.elements.dropLast(1).plus(handleBooleanSelection(gene.elements.last())),
+                            lastElementTreatedSpecially = true
+                    ) else gene // contains only inputs
             }
+
             else -> {
                 BooleanGene(gene.name, true)
             }
@@ -595,7 +693,8 @@ object GeneUtils {
     private fun isLastSelected(gene: TupleGene): Boolean {
         val lastElement = gene.elements[gene.elements.size - 1]
         return (lastElement is OptionalGene && lastElement.isActive) ||
-                (lastElement is BooleanGene && lastElement.value)
+                (lastElement is BooleanGene && lastElement.value)||
+                (lastElement is ObjectGene)
 
     }
 
@@ -605,10 +704,11 @@ object GeneUtils {
 
     }
 
-    private fun isTupleOptionalObjetNotCycleNotLimit(gene: Gene):Boolean {
-        return (gene is TupleGene && gene.elements.last() is OptionalGene
-                && (gene.elements.last() as OptionalGene).gene is ObjectGene && (
-                ((gene.elements.last() as OptionalGene).gene !is CycleObjectGene)  || ((gene.elements.last() as OptionalGene).gene !is LimitObjectGene)))
+    private fun isLastElementInTupleObjetNotCycleNotLimit(gene: TupleGene): Boolean {
+        return (gene.lastElementTreatedSpecially &&
+                 gene.elements.last() is ObjectGene &&
+                ( (gene.elements.last() !is CycleObjectGene)||(gene.elements.last() !is LimitObjectGene))
+        )
     }
 
     /**
@@ -633,7 +733,7 @@ object GeneUtils {
      */
     fun removeEnclosedQuotationMarks(str: String): String {
         return if (str.startsWith(QUOTATION_MARK) && str.endsWith(QUOTATION_MARK)) {
-            str.substring(1,str.length-1)
+            str.substring(1, str.length - 1)
         } else {
             str
         }
@@ -657,4 +757,176 @@ object GeneUtils {
             str
         }
     }
+
+
+    /**
+     * Traverse the children of a wrapper gene, and return the leaf gene
+     *
+     * Return can only be null if [checkIfInUse] is true.
+     */
+    fun getWrappedValueGene(gene: Gene, checkIfInUse: Boolean = false): Gene? {
+
+        if(checkIfInUse && gene is SelectableWrapperGene && !gene.isActive){
+            return null
+        }
+
+        if (gene is OptionalGene) {
+            return getWrappedValueGene(gene.gene)
+        } else if (gene is CustomMutationRateGene<*>)
+            return getWrappedValueGene(gene.gene)
+        else if (gene is SqlPrimaryKeyGene) {
+            if (gene.gene is SqlAutoIncrementGene)
+                return gene
+            else return getWrappedValueGene(gene.gene)
+        } else if (gene is NullableGene) {
+            return getWrappedValueGene(gene.gene)
+        } else if (gene is FlexibleGene){
+            return getWrappedValueGene(gene.gene)
+        }
+        return gene
+    }
+
+    fun getBasicGeneBasedOnJavaTypeBytecodeName(typeName: String, geneName: String) : Gene?{
+
+        val valueType = if(typeName.startsWith("L") && typeName.endsWith(";")){
+            typeName.substring(1, typeName.length - 1)
+        } else {
+            typeName
+        }
+
+        if(!valueType.startsWith("java")){
+            /*
+                not part of JDK... would a deserializer for a Map do that?
+                eg, maybe using a library class? still feel weird, would need to double-check if this happens
+             */
+            log.warn("Not supported gene type for non-JDK class: $typeName")
+            return null
+        }
+
+        val className = valueType.replace("/",".")
+        val type = try{
+            this::class.java.classLoader.loadClass(className)
+        } catch (e: ClassNotFoundException) {
+            log.warn("Unable to load class $className when inferring type for valueType $valueType")
+            return null
+        }
+
+        return getBasicGeneBasedOnJavaType(type, geneName)
+    }
+
+    fun getBasicGeneBasedOnJavaType(type: Class<*>, name: String): Gene? {
+
+        /*
+            Note we could end up dealing with Number when having code like:
+
+            INVOKEINTERFACE java/util/List.get (I)Ljava/lang/Object; (itf)
+            CHECKCAST java/lang/Number
+            INVOKEVIRTUAL java/lang/Number.intValue ()I
+
+            in this case, just using an Int should "hopefully" be fine, regardless of which xValue() is called afterwards
+         */
+
+        return when{
+            String::class.java.isAssignableFrom(type)
+                    || java.lang.String::class.java.isAssignableFrom(type) -> StringGene(name)
+            Integer::class.java.isAssignableFrom(type)
+                    || java.lang.Integer::class.java.isAssignableFrom(type)
+                    || type == Integer.TYPE-> IntegerGene(name)
+            Double::class.java.isAssignableFrom(type)
+                    || java.lang.Double::class.java.isAssignableFrom(type)
+                    || type == java.lang.Double.TYPE-> DoubleGene(name)
+            Boolean::class.java.isAssignableFrom(type)
+                    || java.lang.Boolean::class.java.isAssignableFrom(type)
+                    || type == java.lang.Boolean.TYPE-> BooleanGene(name)
+            Float::class.java.isAssignableFrom(type)
+                    || java.lang.Float::class.java.isAssignableFrom(type)
+                    || type == java.lang.Float.TYPE-> FloatGene(name)
+            Long::class.java.isAssignableFrom(type)
+                    || java.lang.Long::class.java.isAssignableFrom(type)
+                    || type == java.lang.Long.TYPE-> LongGene(name)
+            Short::class.java.isAssignableFrom(type)
+                    || java.lang.Short::class.java.isAssignableFrom(type)
+                    || type == java.lang.Short.TYPE -> instantiateShortGene(name)
+            Byte::class.java.isAssignableFrom(type)
+                    || java.lang.Byte::class.java.isAssignableFrom(type)
+                    || type == java.lang.Byte.TYPE-> instantiateByteGene(name)
+            Char::class.java.isAssignableFrom(type)
+                    || java.lang.Character::class.java.isAssignableFrom(type)
+                    || type == java.lang.Character.TYPE -> instantiateCharGene(name)
+            Map::class.java.isAssignableFrom(type)
+                    || java.util.Map::class.java.isAssignableFrom(type) ->
+                        TaintedMapGene(name, TaintInputName.getTaintName(StaticCounter.getAndIncrease()))
+            List::class.java.isAssignableFrom(type)
+                    || java.util.List::class.java.isAssignableFrom(type)
+                    || Set::class.java.isAssignableFrom(type)
+                    || java.util.Set::class.java.isAssignableFrom(type) ->
+                        TaintedArrayGene(name, TaintInputName.getTaintName(StaticCounter.getAndIncrease()))
+            //important this is last, as it matches all its subclasses
+            Number::class.java.isAssignableFrom(type)
+                    || java.lang.Number::class.java.isAssignableFrom(type)-> IntegerGene(name)
+            else -> {
+                null
+            }
+        }
+    }
+
+    fun getBasicGeneBasedOnBytecodeType(type: String, name: String) : Gene?{
+        /*
+        https://lambdaurora.dev/tutorials/java/bytecode/types.html
+        V, represents void, it exists as a type descriptor for method return types.
+        Z, represents a boolean type.
+        B, represents a byte type.
+        C, represents a char type.
+        S, represents a short type.
+        I, represents an int type.
+        J, represents a long type.
+        F, represents a float type.
+        D, represents a double type.
+
+        Objects -> L...;  eg Ljava/lang/String;
+        */
+
+        return when(type){
+            "Z" -> BooleanGene(name)
+            "B" -> instantiateByteGene(name)
+            "C" -> instantiateCharGene(name)
+            "S" -> instantiateShortGene(name)
+            "I" -> IntegerGene(name)
+            "J" -> LongGene(name)
+            "F" -> FloatGene(name)
+            "D" -> DoubleGene(name)
+            else -> when{
+                type.startsWith("[") -> instantiateArrayGeneBasedOnBytecodeType(type,name)
+                else ->   getBasicGeneBasedOnJavaTypeBytecodeName(type, name)
+            }
+        }
+    }
+
+    fun instantiateArrayGeneBasedOnBytecodeType(type: String, name: String) : Gene?{
+        if(!type.startsWith("[")){
+            throw IllegalArgumentException("Array type not starting with [ -> $type")
+        }
+        val subtype = type.substring(1)
+
+        if(subtype.contains("java/lang/Object")){
+            return TaintedArrayGene(name, TaintInputName.getTaintName(StaticCounter.getAndIncrease()))
+        }
+
+        val template = getBasicGeneBasedOnBytecodeType(subtype, name)
+        if(template == null){
+            log.warn("Failed to instantiate gene for subtype: $subtype")
+            return null
+        }
+
+        return ArrayGene(name, template)
+    }
+
+    fun instantiateByteGene(name: String) =
+        IntegerGene(name, min = Byte.MIN_VALUE.toInt(), max = Byte.MAX_VALUE.toInt())
+
+    fun instantiateCharGene(name: String) =
+        StringGene(name, minLength = 1, maxLength = 1)
+
+    fun instantiateShortGene(name: String) =
+        IntegerGene(name, min = Short.MIN_VALUE.toInt(), max = Short.MAX_VALUE.toInt())
 }

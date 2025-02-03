@@ -1,5 +1,6 @@
 package org.evomaster.core.search.gene.network
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.*
@@ -32,8 +33,8 @@ class MacAddrGene(
         val log: Logger = LoggerFactory.getLogger(MacAddrGene::class.java)
     }
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
@@ -76,7 +77,7 @@ class MacAddrGene(
         }
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is MacAddrGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
@@ -85,9 +86,16 @@ class MacAddrGene(
                     "cannot bind MacAddrGene${octets.size} with MacAddrGene${other.octets.size}"
             )
         }
-        repeat(octets.size) {
-            octets[it].copyValueFrom(other.octets[it])
-        }
+
+        return updateValueOnlyIfValid(
+            {
+                var ok = true
+                repeat(octets.size) {
+                    ok = ok && octets[it].copyValueFrom(other.octets[it])
+                }
+                ok
+            }, true
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

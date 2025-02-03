@@ -82,14 +82,22 @@ class DoubleGene(name: String,
     }
 
     override fun getValueAsPrintableString(previousGenes: List<Gene>, mode: GeneUtils.EscapeMode?, targetFormat: OutputFormat?, extraCheck: Boolean): String {
-        return getFormattedValue().toString()
+        val stringValue = getFormattedValue().toString()
+        return if(mode==GeneUtils.EscapeMode.EJSON) "{\"\$numberDouble\":\"$stringValue\"}" else stringValue
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is DoubleGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
+        val current = this.value
         this.value = other.value
+        if (!isLocallyValid()){
+            this.value = current
+            return false
+        }
+
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
@@ -161,6 +169,18 @@ class DoubleGene(name: String,
         if (df <= getMaximum() && df >= getMinimum())
             return df
         return NumberCalculationUtil.getMiddle(getMinimum(), getMaximum(), scale).toDouble()
+    }
+
+    /**
+     * Set Double Gene from string value
+     */
+    override fun setFromStringValue(value: String) : Boolean{
+        try{
+            this.value = value.toDouble()
+            return true
+        }catch (e: NumberFormatException){
+            return false
+        }
     }
 
     override fun getZero(): Double = 0.0

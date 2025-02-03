@@ -1,5 +1,6 @@
 package org.evomaster.core.search.gene.string
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.interfaces.ComparableGene
@@ -55,9 +56,9 @@ class NumericStringGene(
     )
 
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         //TODO minLength does not seem to be used...
-        return getViewOfChildren().all { it.isLocallyValid() }
+        return true
     }
 
     override fun copyContent(): Gene {
@@ -68,10 +69,10 @@ class NumericStringGene(
         return number.isMutable()
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is NumericStringGene)
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
-        this.number.copyValueFrom(other.number)
+       return updateValueOnlyIfValid({this.number.copyValueFrom(other.number)}, false)
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

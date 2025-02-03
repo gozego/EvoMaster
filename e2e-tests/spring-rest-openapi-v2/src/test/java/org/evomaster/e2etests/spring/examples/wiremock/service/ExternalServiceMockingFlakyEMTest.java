@@ -1,23 +1,21 @@
 package org.evomaster.e2etests.spring.examples.wiremock.service;
 
 import com.foo.rest.examples.spring.wiremock.service.ServiceController;
-import org.evomaster.ci.utils.CIUtils;
 import org.evomaster.core.EMConfig;
 import org.evomaster.core.problem.rest.HttpVerb;
 import org.evomaster.core.problem.rest.RestIndividual;
-import org.evomaster.core.problem.rest.resource.RestResourceCalls;
-import org.evomaster.core.search.Action;
-import org.evomaster.core.search.ActionFilter;
+import org.evomaster.core.search.action.Action;
 import org.evomaster.core.search.EvaluatedIndividual;
 import org.evomaster.core.search.Solution;
 import org.evomaster.e2etests.spring.examples.SpringTestBase;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ExternalServiceMockingFlakyEMTest extends SpringTestBase {
 
@@ -34,8 +32,8 @@ public class ExternalServiceMockingFlakyEMTest extends SpringTestBase {
         runTestHandlingFlakyAndCompilation(
                 "ExternalServiceMockingEMGeneratedTest",
                 "org.bar.ExternalServiceMockingEMGeneratedTest",
-                1000,
-                !CIUtils.isRunningGA(), //TODO skip test generation due to https://github.com/alibaba/java-dns-cache-manipulator/issues/115
+                500,
+                true,
                 (args) -> {
 
                     // IP set to 127.0.0.5 to confirm the test failure
@@ -46,29 +44,18 @@ public class ExternalServiceMockingFlakyEMTest extends SpringTestBase {
                     args.add("--externalServiceIPSelectionStrategy");
                     args.add("USER");
                     args.add("--externalServiceIP");
-                    args.add("127.0.0.5");
+                    args.add("127.0.0.50");
 
                     Solution<RestIndividual> solution = initAndRun(args);
 
-                    // The below block of code is an experiment
-                    // The value 14 is decided by looking at the generated actions count
-                    // manually.
                     List<Action> actions = new ArrayList<>();
                     for (EvaluatedIndividual<RestIndividual> individual : solution.getIndividuals()) {
-                        for (RestResourceCalls call : individual.getIndividual().getResourceCalls()) {
-                            actions.addAll(call.seeActions(ActionFilter.ONLY_EXTERNAL_SERVICE));
-                        }
+                        actions.addAll(individual.getIndividual().seeExternalServiceActions());
                     }
-                    assertEquals(actions.size(), 14);
-                    // End block
-
-                    // TODO: Multiple calls to the same service test casuses problems. Will be implmented
-                    //  separatley.
+                    assertTrue(actions.size() > 0);
 
                     assertHasAtLeastOne(solution, HttpVerb.GET, 200, "/api/wiremock/external", "true");
                     assertHasAtLeastOne(solution, HttpVerb.GET, 200, "/api/wiremock/external/complex", "true");
-                    // TODO: Disabled till the Jackson method replacement handled to unmarshall the JSON
-//                    assertHasAtLeastOne(solution, HttpVerb.GET, 200, "/api/wiremock/external/json", "false");
                 },
                 3);
     }

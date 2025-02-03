@@ -1,6 +1,7 @@
 package org.evomaster.client.java.instrumentation.object;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.evomaster.client.java.instrumentation.object.dtos.*;
@@ -8,6 +9,7 @@ import org.evomaster.client.java.instrumentation.staticstate.UnitsInfoRecorder;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +52,17 @@ public class ClassToSchemaTest {
         JsonObject field = obj.get("properties").getAsJsonObject().get(fieldName).getAsJsonObject();
         assertEquals(type, field.get("type").getAsString());
         assertEquals(format, field.get("format").getAsString());
+    }
+
+    private void verifyEnumOfFieldInProperties(JsonObject obj, String fieldName, String[] items){
+        JsonObject field = obj.get("properties").getAsJsonObject().get(fieldName).getAsJsonObject();
+        assertEquals("string", field.get("type").getAsString());
+        assertTrue(field.get("enum").isJsonArray());
+        JsonArray array = field.get("enum").getAsJsonArray();
+        assertEquals(items.length, array.size());
+        for (int i = 0; i < items.length; i++){
+            assertEquals(items[i], array.get(i).getAsString());
+        }
     }
 
     @Test
@@ -143,11 +156,11 @@ public class ClassToSchemaTest {
 
     @Test
     public void testMapDto(){
-        String schema = ClassToSchema.getOrDeriveSchemaWithItsRef(MapDto.class);
+        String schema = ClassToSchema.getOrDeriveSchemaWithItsRef(DtoMap.class);
         JsonObject all = parse(schema);
-        JsonObject jsonMapAndArray = all.get(MapDto.class.getName()).getAsJsonObject();
+        JsonObject jsonMapAndArray = all.get(DtoMap.class.getName()).getAsJsonObject();
         assertEquals(2, jsonMapAndArray.size());
-        checkMapDto(jsonMapAndArray.get(MapDto.class.getName()).getAsJsonObject());
+        checkMapDto(jsonMapAndArray.get(DtoMap.class.getName()).getAsJsonObject());
         checkDtoArray(jsonMapAndArray.get(DtoArray.class.getName()).getAsJsonObject());
     }
 
@@ -156,7 +169,7 @@ public class ClassToSchemaTest {
         String schema = ClassToSchema.getOrDeriveSchemaWithItsRef(Map.class);
         JsonObject all = parse(schema);
         JsonObject jvmMap = all.get(Map.class.getName()).getAsJsonObject().get(Map.class.getName()).getAsJsonObject();
-        verifyMapField(jvmMap, "string", false);
+        verifyUnconstrainedMap(jvmMap);
     }
 
     @Test
@@ -167,12 +180,12 @@ public class ClassToSchemaTest {
         assertEquals(2, UnitsInfoRecorder.getInstance().getParsedDtos().size());
 
         List<Class<?>> embedded = new ArrayList<>();
-        String cycleDtoASchema = ClassToSchema.getOrDeriveSchema(CycleDtoA.class, embedded);
+        String cycleDtoASchema = ClassToSchema.getOrDeriveNamedSchema(CycleDtoA.class, embedded);
         JsonObject json = parse(cycleDtoASchema);
         JsonObject obj = json.get(CycleDtoA.class.getName()).getAsJsonObject();
         checkCycleA(obj);
 
-        String cycleDtoBSchema = ClassToSchema.getOrDeriveSchema(CycleDtoB.class, embedded);
+        String cycleDtoBSchema = ClassToSchema.getOrDeriveNamedSchema(CycleDtoB.class, embedded);
         JsonObject jsonB = parse(cycleDtoBSchema);
         JsonObject objB = jsonB.get(CycleDtoB.class.getName()).getAsJsonObject();
         checkCycleB(objB);
@@ -186,6 +199,79 @@ public class ClassToSchemaTest {
 
     }
 
+    @Test
+    public void testDtoEnum(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoEnum.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoEnum.class.getName()).getAsJsonObject();
+        assertEquals(2, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeOfFieldInProperties(obj, "string", "foo");
+        verifyEnumOfFieldInProperties(obj, "bar", new String[]{"ONE", "TWO", "THREE"});
+    }
+
+    @Test
+    public void testDate(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoDate.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoDate.class.getName()).getAsJsonObject();
+        assertEquals(1, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeAndFormatOfFieldInProperties(obj, "string", "date", "foo");
+    }
+
+    @Test
+    public void testLocalDateTime(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoLocalDateTime.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoLocalDateTime.class.getName()).getAsJsonObject();
+        assertEquals(1, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeAndFormatOfFieldInProperties(obj, "string", "local-date-time", "foo");
+    }
+
+    @Test
+    public void testLocalDate(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoLocalDate.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoLocalDate.class.getName()).getAsJsonObject();
+        assertEquals(1, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeAndFormatOfFieldInProperties(obj, "string", "local-date", "foo");
+    }
+
+    public void testLocalTime(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoLocalTime.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoLocalTime.class.getName()).getAsJsonObject();
+        assertEquals(1, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeAndFormatOfFieldInProperties(obj, "string", "local-date", "foo");
+    }
+
+    @Test
+    public void testObjectRequiredFields(){
+
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoObj.class, true, Collections.emptyList());
+        JsonObject json = parse(schema);
+
+        JsonObject obj = json.get(DtoObj.class.getName()).getAsJsonObject();
+        assertNotNull(obj);
+        assertNotNull(obj.get("required"));
+        assertEquals(1, obj.get("required").getAsJsonArray().size());
+        assertEquals("foo", obj.get("required").getAsJsonArray().get(0).getAsString());
+    }
+
+    @Test
+    public void testCollectionField() {
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoCollection.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoCollection.class.getName()).getAsJsonObject();
+
+        checkDtoCollection(obj);
+    }
+
+    @Test
+    public void testNoSQLEntity() {
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(NoSQLEntity.class);
+        System.out.println(schema);
+
+    }
 
     private void checkDtoArray(JsonObject obj){
         assertEquals(5, obj.get("properties").getAsJsonObject().entrySet().size());
@@ -194,6 +280,12 @@ public class ClassToSchemaTest {
         verifyTypeInArray(obj, "string", "set_raw");
         verifyTypeInArray(obj, "boolean", "list");
         verifyTypeInArray(obj, "string", "list_raw");
+    }
+
+    private void checkDtoCollection(JsonObject obj){
+        assertEquals(2, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeInArray(obj, "boolean", "collection");
+        verifyTypeInArray(obj, "string", "collection_raw");
     }
 
     private void checkMapDto(JsonObject obj){
@@ -212,6 +304,15 @@ public class ClassToSchemaTest {
         JsonObject field = obj.get("properties").getAsJsonObject()
                 .get(fieldName).getAsJsonObject();
         verifyMapField(field, valueType, isRef);
+    }
+
+
+    private void verifyUnconstrainedMap(JsonObject field){
+        assertEquals("object", field.get("type").getAsString());
+        assertTrue(field.has("additionalProperties"));
+        assertFalse(field.has("properties"));
+        boolean ap = Boolean.parseBoolean(field.get("additionalProperties").getAsString());
+        assertTrue(ap);
     }
 
     private void verifyMapField(JsonObject field, String valueType, boolean isRef){
@@ -240,5 +341,28 @@ public class ClassToSchemaTest {
     private void verifyRefOfFieldInProperties(JsonObject obj, String expected, String fieldName){
         assertEquals(expected, obj.get("properties").getAsJsonObject()
                 .get(fieldName).getAsJsonObject().get("$ref").getAsString());
+    }
+
+    @Test
+    public void testChar(){
+        String schema = ClassToSchema.getOrDeriveNonNestedSchema(DtoChar.class);
+        JsonObject json = parse(schema);
+        JsonObject obj = json.get(DtoChar.class.getName()).getAsJsonObject();
+        assertEquals(1, obj.get("properties").getAsJsonObject().entrySet().size());
+        verifyTypeAndFormatOfFieldInProperties(obj, "string", "char", "foo");
+    }
+
+
+    @Test
+    public void testCacheIssue(){
+
+        String x = ClassToSchema.getOrDeriveNonNestedSchema(DtoInteger.class);
+        assertNotNull(x);
+        assertTrue(x.contains("foo"));
+
+        String y = ClassToSchema.getOrDeriveNonNestedSchema(Integer.class);
+        assertNotNull(y);
+        //cache should not screw up here
+        assertFalse(y.contains("foo"), y);
     }
 }

@@ -24,7 +24,13 @@ import org.slf4j.LoggerFactory
 class EnumGene<T : Comparable<T>>(
     name: String,
     data: Collection<T>,
-    var index: Int = 0
+    var index: Int = 0,
+    /**
+     * At times, to simplify things, we might use strings to represent other types (eg numbers),
+     * to avoid specifying exact types. Still, should not be printed out as string.
+     * Recall that an enum is just a group of constants that cannot be mutated
+     */
+    private val treatAsNotString : Boolean = false
 ) : SimpleGene(name) {
 
     companion object {
@@ -76,9 +82,13 @@ class EnumGene<T : Comparable<T>>(
                 throw IllegalArgumentException("Invalid index: $index")
             }
         }
+
+        if(treatAsNotString && values.isNotEmpty() && values[0] !is String){
+            throw IllegalArgumentException("Enum values should had been of type String")
+        }
     }
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         return (index >= 0 && index < values.size) || values.isEmpty()
     }
 
@@ -88,11 +98,19 @@ class EnumGene<T : Comparable<T>>(
 
     override fun copyContent(): Gene {
         //recall: "values" is immutable
-        return EnumGene<T>(name, values, index)
+        return EnumGene<T>(name, values, index, treatAsNotString)
     }
 
     override fun setValueWithRawString(value: String) {
-        this.index = value.toInt()
+        try {
+            this.index = value.toInt()
+        }catch (e: NumberFormatException){
+            val foundIndex = values.indexOfFirst { it.equals(value) }
+            if (foundIndex != -1)
+                this.index = foundIndex
+            else
+                throw IllegalStateException("cannot find an index in this Enum with $value")
+        }
     }
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
@@ -154,7 +172,7 @@ class EnumGene<T : Comparable<T>>(
     override fun getValueAsPrintableString(previousGenes: List<Gene>, mode: GeneUtils.EscapeMode?, targetFormat: OutputFormat?, extraCheck: Boolean): String {
 
         val res = values[index]
-        if (res is String) {
+        if (res is String && !treatAsNotString) {
             return "\"$res\""
         } else {
             return res.toString()
@@ -165,17 +183,25 @@ class EnumGene<T : Comparable<T>>(
         return values[index].toString()
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is EnumGene<*>) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
+        val current = this.index
         this.index = other.index
+        if (!isLocallyValid()){
+            this.index = current
+            return false
+        }
+
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
         if (other !is EnumGene<*>) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
+        //FIXME what if compared to another enum with different values???
         return this.index == other.index
     }
 
@@ -190,6 +216,17 @@ class EnumGene<T : Comparable<T>>(
                 return false
             }
         }
+        return true
+    }
+
+    override fun setFromStringValue(value: String): Boolean {
+
+        val target = values.indexOfFirst { it == value }
+        if(target < 0){
+            return false
+        }
+
+        index = target
         return true
     }
 }

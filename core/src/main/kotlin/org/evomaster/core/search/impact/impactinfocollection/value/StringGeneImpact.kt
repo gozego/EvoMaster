@@ -87,10 +87,21 @@ class StringGeneImpact (sharedImpactInfo: SharedImpactInfo,
             val sImpact = allImpacts[gc.current.selectedSpecialization]
             val previousSelect = (gc.previous as? StringGene)?.selectedSpecialization
 
-            val mutatedGeneWithContext = MutatedGeneWithContext(previous = if (previousSelect == currentSelect) gc.previous.specializationGenes[previousSelect] else null, current =  gc.current.specializationGenes[currentSelect], action = "none", position = -1, numOfMutatedGene = 1)
-            (sImpact as GeneImpact).countImpactWithMutatedGeneWithContext(
-                    mutatedGeneWithContext, noImpactTargets = noImpactTargets, impactTargets = impactTargets, improvedTargets = improvedTargets, onlyManipulation = onlyManipulation
+            val mutatedGeneWithContext = MutatedGeneWithContext(
+                current =  gc.current.specializationGenes[currentSelect],
+                actionName = "none",
+                position = -1,
+                previous = if (previousSelect == currentSelect) gc.previous.specializationGenes[previousSelect] else null,
+                numOfMutatedGene = 1,
             )
+            if ((sImpact as GeneImpact).validate(mutatedGeneWithContext.current)){
+                sImpact.countImpactWithMutatedGeneWithContext(
+                        mutatedGeneWithContext, noImpactTargets = noImpactTargets, impactTargets = impactTargets, improvedTargets = improvedTargets, onlyManipulation = onlyManipulation
+                )
+            }else{
+                log.warn("Handling specialization at (${gc.current.selectedSpecialization}) for StringGene (name:${gc.current.name}): Gene (name:${mutatedGeneWithContext.current.name}, type:${mutatedGeneWithContext.current::class.java.simpleName}) and its impact (type:${sImpact::class.java.simpleName}) do not match.")
+            }
+
         }
 
         employBinding.countImpactAndPerformance(noImpactTargets = noImpactTargets, impactTargets = impactTargets, improvedTargets = improvedTargets, onlyManipulation = onlyManipulation, num = gc.numOfMutatedGene)

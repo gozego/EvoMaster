@@ -2,20 +2,18 @@ package org.evomaster.client.java.instrumentation.coverage.methodreplacement.thi
 
 
 import org.evomaster.client.java.instrumentation.ExternalServiceInfo;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.Replacement;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.ThirdPartyCast;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.ThirdPartyMethodReplacementClass;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.UsageFilter;
+import org.evomaster.client.java.instrumentation.coverage.methodreplacement.*;
 import org.evomaster.client.java.instrumentation.shared.ReplacementCategory;
 import org.evomaster.client.java.instrumentation.shared.ReplacementType;
 import org.evomaster.client.java.instrumentation.staticstate.ExecutionTracer;
+import org.evomaster.client.java.instrumentation.staticstate.MethodReplacementPreserveSemantics;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.collectExternalServiceInfo;
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.skipHostnameOrIp;
+import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceUtils.collectExternalServiceInfo;
+import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceUtils.skipHostnameOrIp;
 
 public class OkHttpClient3ClassReplacement extends ThirdPartyMethodReplacementClass {
 
@@ -88,11 +86,25 @@ public class OkHttpClient3ClassReplacement extends ThirdPartyMethodReplacementCl
         }
 
         Method original = getOriginal(singleton, "okhttpclient3_newCall", caller);
+
+        if (MethodReplacementPreserveSemantics.shouldPreserveSemantics) {
+            try{
+                return  original.invoke(caller, request);
+            } catch (IllegalAccessException e){
+                throw new RuntimeException(e);
+            } catch (InvocationTargetException e){
+                throw (Exception) e.getCause();
+            }
+        }
+
         Object replaced = request;
 
         Object url = request.getClass().getMethod("url").invoke(request);
         String urlScheme = (String) url.getClass().getMethod("scheme").invoke(url);
         String urlHost = (String) url.getClass().getMethod("host").invoke(url);
+        String method = (String) request.getClass().getMethod("method").invoke(request);
+        Object body = request.getClass().getMethod("body").invoke(request);
+        Object headers = request.getClass().getMethod("headers").invoke(request);
         int urlPort = (int) url.getClass().getMethod("port").invoke(url);
         String urlEncodedPath = (String) url.getClass().getMethod("encodedPath").invoke(url);
 
@@ -100,6 +112,9 @@ public class OkHttpClient3ClassReplacement extends ThirdPartyMethodReplacementCl
                 && !skipHostnameOrIp(urlHost)
                 && !ExecutionTracer.skipHostname(urlHost)
         ){
+            // To fetch DNS information
+            ExternalServiceUtils.analyzeDnsResolution(urlHost);
+
             ExternalServiceInfo remoteHostInfo = new ExternalServiceInfo(urlScheme, urlHost, urlPort);
             String[] ipAndPort = collectExternalServiceInfo(remoteHostInfo, urlPort);
 
@@ -110,6 +125,10 @@ public class OkHttpClient3ClassReplacement extends ThirdPartyMethodReplacementCl
             ClassLoader loader = ExecutionTracer.getLastCallerClassLoader();
             Object builder = loader.loadClass("okhttp3.Request$Builder").newInstance();
             builder = builder.getClass().getMethod("url", String.class).invoke(builder, replacedUrl);
+            builder = builder.getClass().getMethod("method", String.class, loader.loadClass("okhttp3.RequestBody"))
+                    .invoke(builder, method, body);
+            builder = builder.getClass().getMethod("headers", loader.loadClass("okhttp3.Headers"))
+                    .invoke(builder, headers);
             replaced = builder.getClass().getMethod("build").invoke(builder);
         }
 

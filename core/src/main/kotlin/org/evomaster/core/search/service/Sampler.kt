@@ -1,8 +1,9 @@
 package org.evomaster.core.search.service
 
 import com.google.inject.Inject
+import org.evomaster.client.java.controller.api.dto.SutInfoDto
 import org.evomaster.core.EMConfig
-import org.evomaster.core.search.Action
+import org.evomaster.core.search.action.Action
 import org.evomaster.core.search.EvaluatedIndividual
 import org.evomaster.core.search.Individual
 import org.evomaster.core.search.gene.optional.OptionalGene
@@ -41,7 +42,25 @@ abstract class Sampler<T> : TrackOperator where T : Individual {
      */
     protected val actionCluster: MutableMap<String, Action> = mutableMapOf()
 
+    /**
+     * keep a list of seeded individual
+     */
+    protected val seededIndividuals : MutableList<T> = mutableListOf()
 
+    private var pickingUpLastSeed = false
+
+    fun getActionDefinitions() : List<Action> {
+        return actionCluster.values.map { it.copy() }
+    }
+
+    /**
+     * @return if the last seeded was picked up
+     */
+    fun isLastSeededIndividual() = pickingUpLastSeed
+
+    private fun resetPickingUpLastSeededIndividual() {
+        pickingUpLastSeed = false
+    }
 
     /**
      * Create a new individual. Usually each call to this method
@@ -53,10 +72,17 @@ abstract class Sampler<T> : TrackOperator where T : Individual {
             log.trace("sampler will be applied")
         }
 
+        resetPickingUpLastSeededIndividual()
+
+        if (config.seedTestCases && seededIndividuals.isNotEmpty()){
+            pickingUpLastSeed = seededIndividuals.size == 1
+            return seededIndividuals.removeLast()
+        }
+
         val ind = if (forceRandomSample) {
             sampleAtRandom()
-        } else if (hasSpecialInit() || randomness.nextBoolean(config.probOfSmartSampling)) {
-            // If there is still special init set, sample from that, otherwise depen on probability
+        } else if ( config.isEnabledSmartSampling() && (hasSpecialInitForSmartSampler() ||  randomness.nextBoolean(config.probOfSmartSampling))) {
+            // If there is still special init set, sample from that, otherwise depend on probability
             smartSample()
         } else {
             sampleAtRandom()
@@ -75,6 +101,8 @@ abstract class Sampler<T> : TrackOperator where T : Individual {
      */
     protected abstract fun sampleAtRandom(): T
 
+    protected abstract fun initSeededTests(infoDto: SutInfoDto? = null)
+
     open fun samplePostProcessing(ind: T){
 
         val state = ind.searchGlobalState ?: return
@@ -82,10 +110,19 @@ abstract class Sampler<T> : TrackOperator where T : Individual {
 
         ind.seeAllActions().forEach { a ->
             val allGenes = a.seeTopGenes().flatMap { it.flatView() }
+            val allOptionals = allGenes.filterIsInstance<OptionalGene>()
 
-            allGenes.filterIsInstance<OptionalGene>()
+            allOptionals
                 .filter { it.searchPercentageActive < time }
                 .forEach { it.forbidSelection() }
+
+            val force = randomness.nextBoolean(config.probabilityAllOptionalsAreOnOrOff)
+            if(force){
+                val on = randomness.nextBoolean(config.probabilityOfOnVsOffInAllOptionals)
+                allOptionals
+                    .filter { it.selectable }
+                    .forEach { it.isActive = on }
+            }
         }
     }
 
@@ -103,14 +140,31 @@ abstract class Sampler<T> : TrackOperator where T : Individual {
     fun numberOfDistinctActions() = actionCluster.size
 
     /**
+     * @return number of seeded individual which are not executed
+     */
+    fun numberOfNotExecutedSeededIndividuals() = seededIndividuals.size
+
+    /**
+     * @return number of seeded individual which are not executed
+     */
+    fun getNotExecutedSeededIndividuals() = seededIndividuals.toList()
+
+    /**
      * When the search starts, there might be some predefined individuals
      * that we can sample. But we just need to sample each of them just once.
      * The [smartSample] must first pick from this set.
      *
+     * @return false if there is not left predefined individual to sample with smart sampler
+     */
+    open fun hasSpecialInitForSmartSampler() = false
+
+    /**
+     * When the search starts, there might be some predefined individuals
+     * that we can sample.
+     *
      * @return false if there is not left predefined individual to sample
      */
-    open fun hasSpecialInit() = false
-
+    fun hasSpecialInit() : Boolean = seededIndividuals.isNotEmpty() || hasSpecialInitForSmartSampler()
 
     open fun resetSpecialInit() {}
 

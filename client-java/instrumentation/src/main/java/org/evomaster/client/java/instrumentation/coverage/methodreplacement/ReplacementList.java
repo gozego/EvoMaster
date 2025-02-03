@@ -26,12 +26,15 @@ public class ReplacementList {
         if(listCache == null) {
             listCache = Arrays.asList(
                     new AbstractEndpointClassReplacement(),
+                    new Base64DecoderClassReplacement(),
                     new BooleanClassReplacement(),
                     new ByteClassReplacement(),
                     new CharacterClassReplacement(),
                     new CollectionClassReplacement(),
+                    new CursorPreparerClassReplacement(),
                     new DateClassReplacement(),
                     new DateFormatClassReplacement(),
+                    new DocumentClassReplacement(),
                     new DoubleClassReplacement(),
                     new EnumClassReplacement(),
                     new FloatClassReplacement(),
@@ -39,6 +42,8 @@ public class ReplacementList {
                     new Http11ProcessorReplacementClass(),
                     new HttpServletRequestClassReplacement(),
                     new IntegerClassReplacement(),
+                    new InetAddressClassReplacement(),
+                    new InetSocketAddressClassReplacement(),
                     new JacksonObjectMapperClassReplacement(),
                     new LocalDateClassReplacement(),
                     new LocalDateTimeClassReplacement(),
@@ -46,25 +51,33 @@ public class ReplacementList {
                     new LongClassReplacement(),
                     new MapClassReplacement(),
                     new MatcherClassReplacement(),
+                    new MessageBodyReaderClassReplacement(),
                     new MethodClassReplacement(),
+                    new MongoCollectionClassReplacement(),
+                    new MongoTemplateClassReplacement(),
+                    new MappingMongoEntityInformationClassReplacement(),
                     new OkHttpClient3BuilderClassReplacement(),
                     new OkHttpClient3ClassReplacement(),
                     new OkHttpClientClassReplacement(),
                     new OkUrlFactoryClassReplacement(),
                     new ObjectClassReplacement(),
+                    new ObjectIdClassReplacement(),
                     new ObjectsClassReplacement(),
                     new PatternClassReplacement(),
                     new PreparedStatementClassReplacement(),
+                    new ProviderBaseClassReplacement(),
                     new StatementClassReplacement(),
                     new StringClassReplacement(),
                     new ShortClassReplacement(),
                     new ServletRequestClassReplacement(),
                     new SocketClassReplacement(),
                     new ThreadMethodReplacement(),
-                    new WebRequestClassReplacement(),
                     new URIClassReplacement(),
                     new URLClassReplacement(),
-                    new UUIDClassReplacement()
+                    new UUIDClassReplacement(),
+                    new ValidatorClassReplacement(),
+                    new WebRequestClassReplacement()
+                    /* Note: Add new class replacements only in alphabetic order */
             );
 
             /*
@@ -156,7 +169,7 @@ public class ReplacementList {
                                     //throw new RuntimeException(e);
                                     return false;
                                 }
-                                return t.getTargetClass().isAssignableFrom(klass);
+                                return t.getTargetClass(ReplacementList.class.getClassLoader()).isAssignableFrom(klass);
                             }
 
                             return t.getTargetClassName().equals(targetClassName);

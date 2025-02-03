@@ -72,6 +72,8 @@ public class AdditionalInfo implements Serializable {
      */
     private final Set<ExternalServiceInfo> externalServices = new CopyOnWriteArraySet<>();
 
+    private final Set<HostnameResolutionInfo> hostnameResolutionInfos = new CopyOnWriteArraySet<>();
+
     /**
      * info for external services which have been referred to the default setup (eg, specified ip and port)
      */
@@ -100,14 +102,34 @@ public class AdditionalInfo implements Serializable {
 
     private String lastExecutingThread = null;
 
-    private final Set<SqlInfo> sqlInfoData = new CopyOnWriteArraySet<>();
+    private final Set<ExecutedSqlCommand> executedSqlCommandData = new CopyOnWriteArraySet<>();
 
-    public Set<SqlInfo> getSqlInfoData(){
-        return Collections.unmodifiableSet(sqlInfoData);
+    private final Set<MongoFindCommand> mongoFindCommandData = new CopyOnWriteArraySet<>();
+
+    private final Set<MongoCollectionSchema> mongoCollectionSchemaData = new CopyOnWriteArraySet<>();
+
+    public Set<ExecutedSqlCommand> getSqlInfoData(){
+        return Collections.unmodifiableSet(executedSqlCommandData);
     }
 
-    public void addSqlInfo(SqlInfo info){
-        sqlInfoData.add(info);
+    public Set<MongoFindCommand> getMongoInfoData(){
+        return Collections.unmodifiableSet(mongoFindCommandData);
+    }
+
+    public Set<MongoCollectionSchema> getMongoCollectionTypeData(){
+        return Collections.unmodifiableSet(mongoCollectionSchemaData);
+    }
+
+    public void addSqlInfo(ExecutedSqlCommand info){
+        executedSqlCommandData.add(info);
+    }
+
+    public void addMongoInfo(MongoFindCommand info){
+        mongoFindCommandData.add(info);
+    }
+
+    public void addMongoCollectionType(MongoCollectionSchema mongoCollectionSchema){
+        mongoCollectionSchemaData.add(mongoCollectionSchema);
     }
 
     public Set<String> getParsedDtoNamesView(){
@@ -243,6 +265,14 @@ public class AdditionalInfo implements Serializable {
 
     public void addExternalService(ExternalServiceInfo hostInfo) {
         externalServices.add(hostInfo);
+    }
+
+    public void addHostnameInfo(HostnameResolutionInfo hostnameResolutionInfo) {
+        hostnameResolutionInfos.add(hostnameResolutionInfo);
+    }
+
+    public Set<HostnameResolutionInfo> getHostnameInfos() {
+        return Collections.unmodifiableSet(hostnameResolutionInfos);
     }
 
     public Set<ExternalServiceInfo> getExternalServices() {

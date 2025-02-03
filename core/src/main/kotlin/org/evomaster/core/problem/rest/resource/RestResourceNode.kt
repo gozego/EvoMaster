@@ -1,18 +1,19 @@
 package org.evomaster.core.problem.rest.resource
 
 import org.evomaster.core.Lazy
-import org.evomaster.core.database.DbAction
+import org.evomaster.core.sql.SqlAction
+import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.problem.rest.*
 import org.evomaster.core.problem.rest.param.BodyParam
-import org.evomaster.core.problem.api.service.param.Param
+import org.evomaster.core.problem.api.param.Param
 import org.evomaster.core.problem.enterprise.EnterpriseActionGroup
 import org.evomaster.core.problem.rest.param.PathParam
 import org.evomaster.core.problem.rest.resource.dependency.*
 import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.problem.rest.util.ParserUtil
 import org.evomaster.core.problem.util.RestResourceTemplateHandler
-import org.evomaster.core.search.ActionFilter
-import org.evomaster.core.search.ActionResult
+import org.evomaster.core.search.action.ActionFilter
+import org.evomaster.core.search.action.ActionResult
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.ObjectGene
 import org.evomaster.core.search.gene.sql.SqlForeignKeyGene
@@ -72,6 +73,14 @@ open class RestResourceNode(
      */
     private val ancestors : MutableList<RestResourceNode> = mutableListOf()
 
+    /**
+     * [otherPostResourceNode] contains resource nodes which have POST action, but not part of [ancestors]
+     *
+     * Man: current consider all other resources which have POST,
+     * TODO might only consider sibling resources or need some strategies
+     */
+    private val otherPostResourceNode : MutableList<RestResourceNode> = mutableListOf()
+
 
     /**
      * possible solutions to prepare resources
@@ -116,6 +125,7 @@ open class RestResourceNode(
     fun init(){
         initVerbs()
         initCreationPoints()
+        initTemplates()
         when(initMode){
             InitMode.WITH_TOKEN, InitMode.WITH_DERIVED_DEPENDENCY, InitMode.WITH_DEPENDENCY -> initParamInfo()
             else -> { }
@@ -127,8 +137,12 @@ open class RestResourceNode(
      */
     fun initAncestors(resources : List<RestResourceNode>){
         resources.forEach {r ->
-            if(!r.path.isEquivalent(this.path) && r.path.isAncestorOf(this.path))
+            if(!r.path.isEquivalent(this.path) && r.path.isDirectOrPossibleAncestorOf(this.path))
                 ancestors.add(r)
+            else{
+                if(r.getPotentialRestActionForCreation().isNotEmpty())
+                    otherPostResourceNode.add(r)
+            }
         }
     }
 
@@ -144,9 +158,9 @@ open class RestResourceNode(
     /**
      * @return mutable genes in [dbactions] and they do not bind with rest actions.
      */
-    fun getMutableSQLGenes(dbactions: List<DbAction>, template: String, is2POST : Boolean) : List<out Gene>{
+    fun getMutableSQLGenes(dbactions: List<SqlAction>, template: String, is2POST : Boolean) : List<out Gene>{
 
-        val related = getPossiblyBoundParams(template, is2POST).map {
+        val related = getPossiblyBoundParams(template, is2POST, null).map {
             resourceToTable.paramToTable[it.key]
         }
 
@@ -164,7 +178,7 @@ open class RestResourceNode(
 
         if (!RestResourceTemplateHandler.isNotSingleAction(template)) return actions.flatMap(RestCallAction::seeTopGenes).filter(Gene::isMutable)
 
-        val missing = getPossiblyBoundParams(template, false)
+        val missing = getPossiblyBoundParams(template, false, null)
         val params = mutableListOf<Param>()
         (actions.indices).forEach { i ->
             val a = actions[i]
@@ -191,16 +205,19 @@ open class RestResourceNode(
                     verbs[it] = true
             }
         }
+
+
         verbs[verbs.size - 1] = verbs[RestResourceTemplateHandler.getIndexOfHttpVerb(HttpVerb.POST)]
+    }
+
+    private fun initTemplates(){
         if (!verbs[verbs.size - 1]){
-            if(ancestors.isNotEmpty())
-                verbs[verbs.size - 1] = ancestors.any { a -> a.actions.any { ia->  ia.verb == HttpVerb.POST } }
+            verbs[verbs.size - 1] = hasPostCreation()
         }
 
         RestResourceTemplateHandler.initSampleSpaceOnlyPOST(verbs, templates)
 
         assert(templates.isNotEmpty())
-
     }
 
     //if only get
@@ -231,25 +248,42 @@ open class RestResourceNode(
     private fun initCreationPoints(){
 
         val postCreation = PostCreationChain(mutableListOf())
-        val posts = actions.filter { it.verb == HttpVerb.POST}
-        val post : RestCallAction? = when {
-            posts.isEmpty() -> {
-                chooseClosestAncestor(path, listOf(HttpVerb.POST))
-            }
-            posts.size == 1 -> {
-                posts[0]
-            }
-            else -> null
-        }?.copy() as? RestCallAction
+        val posts = mutableMapOf<String, List<RestCallAction>>()
 
-        if(post != null){
-            postCreation.actions.add(0, post)
-            if ((post).path.hasVariablePathParameters() &&
-                    (!post.path.isLastElementAParameter()) ||
-                    post.path.getVariableNames().size >= 2) {
-                nextCreationPoints(post.path, postCreation)
-            }else
-                postCreation.confirmComplete()
+        val currentPost = actions.filter { it.isPotentialActionForCreation()}
+        if (currentPost.isNotEmpty()){
+            posts[currentPost.first().path.toString()] = currentPost.groupBy { it.verb }.map { (t, u) ->
+                if (u.size > 1){
+                    LoggingUtil.uniqueWarn(log, "more than ${t.name} Actions for resource node $path")
+                }
+                u.first()
+            }
+        }
+
+
+        if (posts.isEmpty()){
+            val siblingPost = getSiblingPostAction()
+            if (siblingPost != null && siblingPost.isNotEmpty())
+                posts[siblingPost.first().path.toString()] = siblingPost
+            else{
+                val ancestorPosts = chooseAllClosestAncestor(path, RestCallAction.CONFIG_POTENTIAL_VERB_FOR_CREATION)
+                if (ancestorPosts != null) posts[ancestorPosts.first().path.toString()] = ancestorPosts
+            }
+
+        }
+
+        if (posts.isNotEmpty()){
+            postCreation.addActions(0, posts.values.flatten())
+            for (post in posts.values.map { it.first() }){
+                /*
+                    in terms of eg, /v3/api/rfoo/{rfooId}
+                    if the verb is PUT, it is still needed to check its ancestor for preparing resources
+                 */
+                if ((post.path.hasVariablePathParameters() && (post.verb == HttpVerb.PUT || !post.path.isLastElementAParameter())) || post.path.getVariableNames().size >= 2) {
+                    nextCreationPoints(post.path, postCreation)
+                }else
+                    postCreation.confirmComplete()
+            }
         }else{
             if(path.hasVariablePathParameters()) {
                 postCreation.confirmIncomplete(path.toString())
@@ -257,20 +291,30 @@ open class RestResourceNode(
                 postCreation.confirmComplete()
         }
 
-        if (postCreation.actions.isNotEmpty())
+        postCreation.prioritizePostChain()
+
+        if (postCreation.hasAnyAction())
             creations.add(postCreation)
     }
 
+    private fun getSiblingPostAction() : List<RestCallAction>?{
+        return otherPostResourceNode.find { it.path.isSiblingForPreparingResource(this.path) }?.getPotentialRestActionForCreation()
+    }
+
+
     private fun nextCreationPoints(path:RestPath, postCreationChain: PostCreationChain){
-        val post = chooseClosestAncestor(path, listOf(HttpVerb.POST))?.copy() as? RestCallAction
-        if(post != null){
-            postCreationChain.actions.add(0, post)
-            if (post.path.hasVariablePathParameters() &&
+        val posts = chooseAllClosestAncestor(path, RestCallAction.CONFIG_POTENTIAL_VERB_FOR_CREATION)?.map { it.copy() as RestCallAction }
+        if(!posts.isNullOrEmpty()){
+            val newPosts = posts.filter { !postCreationChain.hasAction(it) }
+            postCreationChain.addActions(0, newPosts)
+            for (post in newPosts){
+                if (post.path.hasVariablePathParameters() &&
                     (!post.path.isLastElementAParameter()) ||
                     post.path.getVariableNames().size >= 2) {
-                nextCreationPoints(post.path, postCreationChain)
-            }else
-                postCreationChain.confirmComplete()
+                    nextCreationPoints(post.path, postCreationChain)
+                }else
+                    postCreationChain.confirmComplete()
+            }
         }else{
             postCreationChain.confirmIncomplete(path.toString())
         }
@@ -292,7 +336,8 @@ open class RestResourceNode(
      * generated another resource calls which differs from [calls]
      */
     fun generateAnother(calls : RestResourceCalls, randomness: Randomness, maxTestSize: Int) : RestResourceCalls?{
-        val current = calls.template?.template?: RestResourceTemplateHandler.getStringTemplateByActions(calls.seeActions(ActionFilter.NO_SQL).filterIsInstance<RestCallAction>())
+        val current = calls.template?.template?: RestResourceTemplateHandler.getStringTemplateByActions(calls.seeActions(
+            ActionFilter.NO_SQL).filterIsInstance<RestCallAction>())
         val rest = templates.filter { it.value.template != current}
         if(rest.isEmpty()) return null
         val selected = randomness.choose(rest.keys)
@@ -341,7 +386,7 @@ open class RestResourceNode(
      * if [verb] is null, select an action at random from available [actions] in this node
      */
     fun sampleOneAction(verb : HttpVerb? = null, randomness: Randomness) : RestResourceCalls{
-        val al = if(verb != null) getActionByHttpVerb(actions, verb) else randomness.choose(actions)
+        val al = if(verb != null) getActionByHttpVerb(verb) else randomness.choose(actions)
         return sampleOneAction(al!!.copy() as RestCallAction, randomness)
     }
 
@@ -423,39 +468,10 @@ open class RestResourceNode(
         if (actions.size == 1) return actions.first()
 
         (1 until actions.size).forEach { i->
-            handleHeaderLocation(actions[i-1], actions[i])
+            PostCreateResourceUtils.linkDynamicCreateResource(actions[i-1], actions[i])
         }
 
         return actions.last()
-    }
-
-    private fun handleHeaderLocation(post: RestCallAction, target: RestCallAction){
-        /*
-            Once the POST is fully initialized, need to fix
-            links with target
-         */
-        if (!post.path.isEquivalent(target.path)) {
-            /*
-                eg
-                POST /x
-                GET  /x/{id}
-             */
-            post.saveLocation = true
-            target.locationId = post.path.lastElement()
-        } else {
-            /*
-                eg
-                POST /x
-                POST /x/{id}/y
-                GET  /x/{id}/y
-             */
-            //not going to save the position of last POST, as same as target
-            post.saveLocation = false
-
-            // the target (eg GET) needs to use the location of first POST, or more correctly
-            // the same location used for the last POST (in case there is a deeper chain)
-            target.locationId = post.locationId
-        }
     }
 
 
@@ -492,7 +508,7 @@ open class RestResourceNode(
         if (ats.size == 2){
             val action = createActionByVerb(ats[1], randomness)
             if (lastPost != null)
-                handleHeaderLocation(lastPost, action)
+                PostCreateResourceUtils.linkDynamicCreateResource(lastPost, action)
             results.add(action)
         }else if (ats.size > 2){
             throw IllegalStateException("the size of action with $template should be less than 2, but it is ${ats.size}")
@@ -502,7 +518,7 @@ open class RestResourceNode(
         if (ats.last() == HttpVerb.PATCH && results.size +1 <= maxTestSize && randomness.nextBoolean(PROB_EXTRA_PATCH)){
             val second =  results.last().copy() as RestCallAction
             if (lastPost != null)
-                handleHeaderLocation(lastPost, second)
+                PostCreateResourceUtils.linkDynamicCreateResource(lastPost, second)
             results.add(second)
         }
 
@@ -527,7 +543,7 @@ open class RestResourceNode(
 
 
     private fun createActionByVerb(verb : HttpVerb, randomness: Randomness) : RestCallAction{
-        val action = (getActionByHttpVerb(actions, verb)
+        val action = (getActionByHttpVerb(verb)
                 ?:throw IllegalStateException("cannot get $verb action in the resource $path"))
                 .copy() as RestCallAction
 
@@ -554,11 +570,13 @@ open class RestResourceNode(
     }
 
 
-    private fun getActionByHttpVerb(actions : List<RestCallAction>, verb : HttpVerb) : RestCallAction? {
+    private fun getActionByHttpVerb(verb : HttpVerb) : RestCallAction? {
         return actions.find { a -> a.verb == verb }
     }
 
-    private fun chooseLongestPath(actions: List<RestCallAction>, randomness: Randomness? = null): RestCallAction {
+    private fun getPotentialRestActionForCreation() : List<RestCallAction> = actions.filter { it.isPotentialActionForCreation() }
+
+    private fun chooseOneLongestPath(actions: List<RestCallAction>, randomness: Randomness? = null): RestCallAction {
 
         if (actions.isEmpty()) {
             throw IllegalArgumentException("Cannot choose from an empty collection")
@@ -572,12 +590,35 @@ open class RestResourceNode(
             return randomness.choose(candidates).copy() as RestCallAction
     }
 
+    private fun chooseLongestPath(actions: List<RestCallAction>): List<RestCallAction> {
 
-    private fun chooseClosestAncestor(path: RestPath, verbs: List<HttpVerb>): RestCallAction? {
+        if (actions.isEmpty()) {
+            throw IllegalArgumentException("Cannot choose from an empty collection")
+        }
+
+        return ParamUtil.selectLongestPathAction(actions)
+    }
+
+
+    private fun chooseOneClosestAncestor(path: RestPath, verbs: List<HttpVerb>): RestCallAction? {
         val ar = if(path.toString() == this.path.toString()){
             this
         }else{
             ancestors.find { it.path.toString() == path.toString() }
+        }
+        ar?.let{
+            val others = hasWithVerbs(it.ancestors.flatMap { it.actions }, verbs)
+            if(others.isEmpty()) return null
+            return chooseOneLongestPath(others)
+        }
+        return null
+    }
+
+    private fun chooseAllClosestAncestor(path: RestPath, verbs: List<HttpVerb>): List<RestCallAction>? {
+        val ar = if(path.toString() == this.path.toString()){
+            this
+        }else{
+            ancestors.find { it.path.toString() == path.toString() }?:otherPostResourceNode.find { it.path.toString() == path.toString() }
         }
         ar?.let{
             val others = hasWithVerbs(it.ancestors.flatMap { it.actions }, verbs)
@@ -790,12 +831,12 @@ open class RestResourceNode(
         val level = getAllSegments(true).indexOf(segment)
         val doesReferToOther = when(param){
             /*
-            if has POST, ignore the last path param, otherwise all path param
+                if has POST, 50% probability of ignore the last path param, otherwise all path param
              */
             is PathParam->{
-                !verbs[RestResourceTemplateHandler.getIndexOfHttpVerb(HttpVerb.POST)] || getParamLevel(params, param) < tokens.size - 1
+               if (!verbs[RestResourceTemplateHandler.getIndexOfHttpVerb(HttpVerb.POST)] || getParamLevel(params, param) < tokens.size - 1) 1.0 else 0.5
             }else->{
-                false
+                0.0
             }
         }
 
@@ -811,7 +852,7 @@ open class RestResourceNode(
      * @return params in a [RestResourceCalls] that are not bounded with POST actions if there exist based on the template [actionTemplate]
      *
      */
-    open fun getPossiblyBoundParams(actionTemplate: String, withSql : Boolean) : List<ParamInfo>{
+    open fun getPossiblyBoundParams(actionTemplate: String, withSql : Boolean, randomness: Randomness? = null) : List<ParamInfo>{
         val actions = RestResourceTemplateHandler.parseTemplate(actionTemplate)
         Lazy.assert {
             actions.isNotEmpty()
@@ -820,7 +861,7 @@ open class RestResourceNode(
         when(actions[0]){
             HttpVerb.POST->{
                 if (withSql) return paramsInfo.values.toList()
-                return paramsInfo.values.filter { it.doesReferToOther }
+                return paramsInfo.values.filter { it.requiredReferToOthers() || randomness?.nextBoolean(it.probOfReferringToOther) == true }
             }
             HttpVerb.PATCH, HttpVerb.PUT->{
                 return paramsInfo.values.filter { it.involvedAction.contains(actions[0]) && (it.referParam is PathParam || it.name.toLowerCase().contains("id"))}
@@ -888,7 +929,7 @@ enum class InitMode{
  * @property preSegment refers to the segment of the param in the path
  * @property segmentLevel refers to the level of param
  * @property referParam refers to the instance of Param in the cluster
- * @property doesReferToOther indicates whether the param is required to refer to a resource,
+ * @property probOfReferringToOther indicates a probability that the param is required to refer to a resource,
  *              e.g., GET /foo/{id}, with GET, {id} refers to a resource which cannot be created by the current action
  * @property involvedAction indicates the actions which exists such param,
  *              e.g., GET, PATCH might have the same param named id
@@ -901,7 +942,18 @@ data class ParamInfo(
     val preSegment : String, //by default is flatten segment
     val segmentLevel : Int,
     val referParam : Param,
-    val doesReferToOther : Boolean,
+    val probOfReferringToOther: Double,
     val involvedAction : MutableSet<HttpVerb> = mutableSetOf(),
     var fromAdditionInfo : Boolean = false
-)
+){
+
+    /**
+     * @return whether the param is required to refer to other params
+     */
+    fun requiredReferToOthers() = probOfReferringToOther == 1.0
+
+    /**
+     * @return whether the param is possibly needed to refer to other params
+     */
+    fun possiblyReferToOthers() = probOfReferringToOther > 0.0
+}

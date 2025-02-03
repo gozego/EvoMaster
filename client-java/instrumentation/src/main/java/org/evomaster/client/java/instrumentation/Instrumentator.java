@@ -2,8 +2,8 @@ package org.evomaster.client.java.instrumentation;
 
 
 
-import org.evomaster.client.java.instrumentation.coverage.CoverageClassVisitor;
-import org.evomaster.client.java.instrumentation.coverage.ThirdPartyClassVisitor;
+import org.evomaster.client.java.instrumentation.coverage.visitor.classv.CoverageClassVisitor;
+import org.evomaster.client.java.instrumentation.coverage.visitor.classv.ThirdPartyClassVisitor;
 import org.evomaster.client.java.instrumentation.shared.ClassName;
 import org.evomaster.client.java.instrumentation.staticstate.UnitsInfoRecorder;
 import org.evomaster.client.java.utils.SimpleLogger;
@@ -51,7 +51,7 @@ public class Instrumentator {
         Objects.requireNonNull(className);
         Objects.requireNonNull(reader);
 
-        if (!ClassesToExclude.checkIfCanInstrument(className)) {
+        if (!ClassesToExclude.checkIfCanInstrument(classLoader, className)) {
             throw new IllegalArgumentException("Cannot instrument " + className);
         }
 
@@ -74,10 +74,11 @@ public class Instrumentator {
         try {
             cn.accept(cv);
         } catch(Throwable e){
-            SimpleLogger.error("Failed to instrument " + className.getFullNameWithDots(), e);
+            SimpleLogger.error("Failed to instrument " + className.getFullNameWithDots() + " : " + e.getMessage());
             /*
                 throwing exception here is problematic... there are legit cases in which it crashes
-                when computing common ancestors, if those are on classpath
+                when computing common ancestors, if those are on classpath.
+                also, printing full stacktrace just clutters the logs
              */
             return null;
         }

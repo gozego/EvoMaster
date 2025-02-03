@@ -1,5 +1,6 @@
 package org.evomaster.core.search.gene.sql
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.root.CompositeFixedGene
@@ -27,8 +28,8 @@ class SqlCompositeGene(
         const val SINGLE_APOSTROPHE_PLACEHOLDER = "SINGLE_APOSTROPHE_PLACEHOLDER"
     }
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
@@ -64,13 +65,20 @@ class SqlCompositeGene(
         })"
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is SqlCompositeGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
-        for (i in fields.indices) {
-            this.fields[i].copyValueFrom(other.fields[i])
-        }
+
+        return updateValueOnlyIfValid(
+            {
+                var ok = true
+                for (i in fields.indices) {
+                    ok = ok && this.fields[i].copyValueFrom(other.fields[i])
+                }
+                ok
+            }, true
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

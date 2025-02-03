@@ -1,8 +1,8 @@
 package org.evomaster.e2etests.spring.examples.resource;
 
 import org.evomaster.core.problem.rest.resource.RestResourceCalls;
-import org.evomaster.core.search.Action;
-import org.evomaster.core.search.ActionFilter;
+import org.evomaster.core.search.action.Action;
+import org.evomaster.core.search.action.ActionFilter;
 import org.evomaster.core.search.gene.Gene;
 
 import java.util.*;
@@ -79,8 +79,8 @@ public abstract class ResourceMIOHWTestBase extends ResourceTestBase {
                         "--seed", ""+seed,
                         "--useTimeInFeedbackSampling", "false",
                         "--sutControllerPort", "" + controllerPort,
-                        "--maxActionEvaluations", "" + budget,
-                        "--stoppingCriterion", "FITNESS_EVALUATIONS",
+                        "--maxEvaluations", "" + budget,
+                        "--stoppingCriterion", "ACTION_EVALUATIONS",
                         //there some bugs here
                         "--baseTaintAnalysisProbability", "0.0"
                 )

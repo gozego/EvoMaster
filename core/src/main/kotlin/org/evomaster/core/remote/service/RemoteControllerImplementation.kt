@@ -4,14 +4,14 @@ import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException
 import com.google.inject.Inject
 import org.evomaster.client.java.controller.api.ControllerConstants
 import org.evomaster.client.java.controller.api.dto.*
-import org.evomaster.client.java.controller.api.dto.database.operations.DatabaseCommandDto
-import org.evomaster.client.java.controller.api.dto.database.operations.InsertionResultsDto
-import org.evomaster.client.java.controller.api.dto.database.operations.QueryResultDto
+import org.evomaster.client.java.controller.api.dto.database.operations.*
 import org.evomaster.core.EMConfig
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.remote.NoRemoteConnectionException
 import org.evomaster.core.remote.SutProblemException
 import org.evomaster.core.remote.TcpUtils
+import org.evomaster.core.search.service.ExecutionPhaseController
+import org.evomaster.core.search.service.SearchTimeController
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import javax.annotation.PostConstruct
@@ -41,9 +41,18 @@ class RemoteControllerImplementation() : RemoteController{
 
     private var extractSqlExecutionInfo = true
 
+    private var cachedSutInfoDto : SutInfoDto? = null
 
     @Inject
     private lateinit var config: EMConfig
+
+    //TODO: should clean up. in few places we use RemoteController without injection
+    @Inject
+    private var stc: SearchTimeController? = null
+
+    //TODO clean/refactor like stc
+    @Inject
+    private var epc: ExecutionPhaseController? = null
 
     private var client: Client = ClientBuilder.newClient()
 
@@ -67,7 +76,7 @@ class RemoteControllerImplementation() : RemoteController{
     private fun initialize() {
         host = config.sutControllerHost
         port = config.sutControllerPort
-        computeSqlHeuristics = config.heuristicsForSQL
+        computeSqlHeuristics = config.heuristicsForSQL && config.isUsingAdvancedTechniques()
         extractSqlExecutionInfo = config.extractSqlExecutionInfo
     }
 
@@ -202,7 +211,15 @@ class RemoteControllerImplementation() : RemoteController{
             return null
         }
 
-        return getData(dto)
+        cachedSutInfoDto = getData(dto)
+        return cachedSutInfoDto
+    }
+
+    override fun getCachedSutInfo(): SutInfoDto? {
+        if(cachedSutInfoDto == null){
+            getSutInfo()
+        }
+        return cachedSutInfoDto
     }
 
 
@@ -227,12 +244,22 @@ class RemoteControllerImplementation() : RemoteController{
 
     private fun changeState(run: Boolean, reset: Boolean): Boolean {
 
+        val requestDto =  SutRunDto(
+            run,
+            reset,
+            config.enableCustomizedMethodForMockObjectHandling,
+            computeSqlHeuristics,
+            extractSqlExecutionInfo,
+            config.methodReplacementCategories()
+        )
+        requestDto.advancedHeuristics = config.heuristicsForSQLAdvanced
+
         val response = try {
             makeHttpCall {
                 getWebTarget()
                         .path(ControllerConstants.RUN_SUT_PATH)
                         .request()
-                        .put(Entity.json(SutRunDto(run, reset, computeSqlHeuristics, extractSqlExecutionInfo, config.methodReplacementCategories())))
+                        .put(Entity.json(requestDto))
             }
         } catch (e: Exception) {
             log.warn("Failed to connect to SUT: ${e.message}")
@@ -255,7 +282,12 @@ class RemoteControllerImplementation() : RemoteController{
 
     override fun stopSUT() = changeState(false, false)
 
-    override fun resetSUT() = startSUT()
+    override fun resetSUT() : Boolean{
+        stc?.averageResetSUTTimeMs?.doStartTimer()
+        val res = startSUT()
+        stc?.averageResetSUTTimeMs?.addElapsedTime()
+        return res
+    }
 
     override fun checkConnection() {
 
@@ -285,18 +317,42 @@ class RemoteControllerImplementation() : RemoteController{
         return readAndCheckResponse(response, "Failed to inform SUT of new search")
     }
 
-    override fun getTestResults(ids: Set<Int>, ignoreKillSwitch: Boolean): TestResultsDto? {
+    override fun getTestResults(
+        ids: Set<Int>,
+        ignoreKillSwitch: Boolean,
+        fullyCovered: Boolean,
+        descriptiveIds: Boolean
+    ): TestResultsDto? {
 
         val queryParam = ids.joinToString(",")
+
+        if(epc?.isInSearch() == true) stc?.averageOverheadMsTestResultsSubset?.doStartTimer()
 
         val response = makeHttpCall {
             getWebTarget()
                     .path(ControllerConstants.TEST_RESULTS)
                     .queryParam("ids", queryParam)
                     .queryParam("killSwitch", !ignoreKillSwitch && config.killSwitch)
+                    .queryParam("fullyCovered", fullyCovered)
+                    .queryParam("descriptiveIds", descriptiveIds)
+                    .queryParam("queryFromDatabase", !config.useInsertionForSqlHeuristics)
                     .request(MediaType.APPLICATION_JSON_TYPE)
                     .get()
         }
+        if(epc?.isInSearch() == true) stc?.averageOverheadMsTestResultsSubset?.addElapsedTime()
+
+        stc?.apply {
+            val len = try{ Integer.parseInt(response.getHeaderString("content-length"))}
+                        catch (e: Exception) {-1}
+            if(len >= 0) {
+                if(ids.isEmpty()) {
+                    averageByteOverheadTestResultsAll.addValue(len)
+                } else {
+                    averageByteOverheadTestResultsSubset.addValue(len)
+                }
+            }
+        }
+
 
         val dto = getDtoFromResponse(response, object : GenericType<WrappedResponseDto<TestResultsDto>>() {})
 
@@ -317,6 +373,7 @@ class RemoteControllerImplementation() : RemoteController{
         val response = makeHttpCall {
             getWebTarget()
                     .path(ControllerConstants.NEW_ACTION)
+                    .queryParam("queryFromDatabase", !config.useInsertionForSqlHeuristics)
                     .request()
                     .put(Entity.entity(actionDto, MediaType.APPLICATION_JSON_TYPE))
         }
@@ -420,6 +477,10 @@ class RemoteControllerImplementation() : RemoteController{
         return executeDatabaseCommandAndGetResults(dto, object : GenericType<WrappedResponseDto<InsertionResultsDto>>() {})
     }
 
+    override fun executeMongoDatabaseInsertions(dto: MongoDatabaseCommandDto): MongoInsertionResultsDto? {
+        return executeMongoDatabaseCommandAndGetResults(dto, object : GenericType<WrappedResponseDto<MongoInsertionResultsDto>>() {})
+    }
+
     private fun <T> executeDatabaseCommandAndGetResults(dto: DatabaseCommandDto, type: GenericType<WrappedResponseDto<T>>): T?{
 
         val response = makeHttpCall {
@@ -429,11 +490,25 @@ class RemoteControllerImplementation() : RemoteController{
                     .post(Entity.entity(dto, MediaType.APPLICATION_JSON_TYPE))
         }
 
-        val dto = getDtoFromResponse(response, type)
+        val responseDto = getDtoFromResponse(response, type)
 
-        if (!checkResponse(response, dto, "Failed to execute database command")) {
+        if (!checkResponse(response, responseDto, "Failed to execute database command")) {
             return null
         }
+
+        return responseDto?.data
+    }
+
+    private fun <T> executeMongoDatabaseCommandAndGetResults(dto: MongoDatabaseCommandDto, type: GenericType<WrappedResponseDto<T>>): T? {
+
+        val response = makeHttpCall {
+            getWebTarget()
+                .path(ControllerConstants.MONGO_INSERTION)
+                .request()
+                .post(Entity.entity(dto, MediaType.APPLICATION_JSON_TYPE))
+        }
+
+        val dto = getDtoFromResponse(response, type)
 
         return dto?.data
     }

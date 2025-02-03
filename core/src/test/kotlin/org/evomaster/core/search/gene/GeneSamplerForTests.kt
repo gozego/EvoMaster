@@ -2,10 +2,9 @@ package org.evomaster.core.search.gene
 
 import org.evomaster.client.java.instrumentation.shared.TaintInputName
 import org.evomaster.core.search.gene.collection.*
-import org.evomaster.core.search.gene.datetime.DateGene
-import org.evomaster.core.search.gene.datetime.DateTimeGene
-import org.evomaster.core.search.gene.datetime.TimeGene
+import org.evomaster.core.search.gene.datetime.*
 import org.evomaster.core.search.gene.interfaces.ComparableGene
+import org.evomaster.core.search.gene.mongo.ObjectIdGene
 import org.evomaster.core.search.gene.regex.*
 import org.evomaster.core.search.gene.sql.*
 import org.evomaster.core.search.gene.sql.geometric.*
@@ -94,6 +93,9 @@ object GeneSamplerForTests {
 
                 when genes need input genes, we sample those at random as well
              */
+            TimeNumOffsetGene::class -> sampleTimeNumOffsetGene(rand) as T
+            TimeOffsetGene::class -> sampleTimeOffsetGene(rand) as T
+            TaintedMapGene::class -> sampleTaintedMapGene(rand) as T
             TaintedArrayGene::class -> sampleTaintedArrayGene(rand) as T
             ArrayGene::class -> sampleArrayGene(rand) as T
             Base64StringGene::class -> sampleBase64StringGene(rand) as T
@@ -169,10 +171,20 @@ object GeneSamplerForTests {
             UrlHttpGene::class -> sampleUrlHttpGene(rand) as T
             UriDataGene::class -> sampleUrlDataGene(rand) as T
 
+            // Mongo genes
+            ObjectIdGene::class -> sampleMongoObjectIdGene(rand) as T
+
             else -> throw IllegalStateException("No sampler for $klass")
         }
     }
 
+    private fun sampleTimeNumOffsetGene(rand: Randomness): TimeNumOffsetGene {
+        return TimeNumOffsetGene("rand TimeNumOffsetGene ${rand.nextInt()}")
+    }
+
+    private fun sampleTimeOffsetGene(rand: Randomness): TimeOffsetGene {
+        return TimeOffsetGene("rand TimeOffsetGene ${rand.nextInt()}")
+    }
 
 
     private fun sampleUrlDataGene(rand: Randomness): UriDataGene {
@@ -226,11 +238,11 @@ object GeneSamplerForTests {
     }
 
     private fun sampleSqlTimeIntervalGene(rand: Randomness): SqlTimeIntervalGene {
-        val timeGeneFormats = listOf(TimeGene.TimeGeneFormat.ISO_LOCAL_DATE_FORMAT,
-                TimeGene.TimeGeneFormat.TIME_WITH_MILLISECONDS)
+        val timeGeneFormats = listOf(FormatForDatesAndTimes.ISO_LOCAL,
+                FormatForDatesAndTimes.RFC3339)
         val timeGeneFormat = rand.choose(timeGeneFormats)
         return SqlTimeIntervalGene("rand SqlTimeIntervalGene",
-                time = TimeGene("hoursMinutesAndSeconds", timeGeneFormat = timeGeneFormat))
+                time = TimeGene("hoursMinutesAndSeconds", format = timeGeneFormat))
     }
 
     private fun sampleSqlLineSegmentGene(rand: Randomness): SqlLineSegmentGene {
@@ -291,7 +303,11 @@ object GeneSamplerForTests {
                 numberOfOctets = rand.nextInt(1, MAX_NUMBER_OF_OCTETS))
     }
 
-    const val MAX_NUMBER_OF_DIMENSIONS = 5
+    /*
+        reduce the number from 5 to 3
+        a larger number can lead to insane quantity of genes, even hundreds of thousands
+     */
+    const val MAX_NUMBER_OF_DIMENSIONS = 3 //5
     const val MAX_NUMBER_OF_OCTETS = 10
     const val MAX_NUMBER_OF_FIELDS = 3
 
@@ -379,8 +395,12 @@ object GeneSamplerForTests {
         return SqlJSONPathGene("rand JSONPathGene ${rand.nextInt()}")
     }
 
+    private fun sampleMongoObjectIdGene(rand: Randomness): ObjectIdGene {
+        return ObjectIdGene("rand ObjectIdGene ${rand.nextInt()}")
+    }
+
     fun sampleRegexGene(rand: Randomness): RegexGene {
-        return RegexGene(name = "rand RegexGene", disjunctions = sampleDisjunctionListRxGene(rand))
+        return RegexGene(name = "rand RegexGene", disjunctions = sampleDisjunctionListRxGene(rand), "None")
     }
 
     fun sampleQuantifierRxGene(rand: Randomness): QuantifierRxGene {
@@ -493,7 +513,7 @@ object GeneSamplerForTests {
                 name = "rand PairGene",
                 first = sample(rand.choose(selection), rand),
                 second = sample(rand.choose(selection), rand),
-                isFirstMutable = rand.nextBoolean()
+                allowedToMutateFirst = rand.nextBoolean()
         )
     }
 
@@ -505,7 +525,7 @@ object GeneSamplerForTests {
             name = "rand PairGene",
             first = samplePrintableTemplate(selection, rand),
             second = samplePrintableTemplate(selection, rand),
-            isFirstMutable = rand.nextBoolean()
+            allowedToMutateFirst = rand.nextBoolean()
         )
     }
 
@@ -517,7 +537,7 @@ object GeneSamplerForTests {
             name = "rand PairGene",
             first = samplePrintableTemplate(selection, rand),
             second = samplePrintableFlexibleGene(rand),
-            isFirstMutable = rand.nextBoolean()
+            allowedToMutateFirst = rand.nextBoolean()
         )
     }
     fun samplePrintableFlexibleGene(rand: Randomness): FlexibleGene {
@@ -525,9 +545,9 @@ object GeneSamplerForTests {
         val selection = geneClasses.filter { !it.isAbstract}
 
         val valueTemplate = samplePrintableTemplate(selection, rand)
-        return FlexibleGene(valueTemplate.name, valueTemplate)
+        return FlexibleGene(valueTemplate.name, valueTemplate, null)
     }
-    
+
     fun sampleOptionalGene(rand: Randomness): OptionalGene {
 
         val selection = geneClasses.filter { !it.isAbstract }
@@ -552,15 +572,32 @@ object GeneSamplerForTests {
     fun sampleObjectGene(rand: Randomness): ObjectGene {
 
         val selection = geneClasses.filter { !it.isAbstract }
+        val isFixed = rand.nextBoolean()
 
-        return ObjectGene(
-                name = "rand ObjectGene ${rand.nextInt()}",
-                fields = listOf(
-                        sample(rand.choose(selection), rand),
-                        sample(rand.choose(selection), rand),
-                        sample(rand.choose(selection), rand)
-                )
-        )
+
+        return if (isFixed) {
+            ObjectGene(
+                    name = "rand ObjectGene ${rand.nextInt()}",
+                    fields = listOf(
+                            sample(rand.choose(selection), rand),
+                            sample(rand.choose(selection), rand),
+                            sample(rand.choose(selection), rand)
+                    )
+            )
+        }else{
+            ObjectGene(
+                    name = "rand ObjectGene ${rand.nextInt()}",
+                    fixedFields = listOf(
+                            sample(rand.choose(selection), rand),
+                            sample(rand.choose(selection), rand),
+                            sample(rand.choose(selection), rand)
+                    ),
+                    refType = null,
+                    isFixed = isFixed,
+                    template = PairGene("template", sampleStringGene(rand), samplePrintableTemplate(selection, rand)),
+                    additionalFields = mutableListOf()
+            )
+        }
     }
 
     fun sampleNumericStringGene(rand: Randomness): NumericStringGene {
@@ -813,6 +850,12 @@ object GeneSamplerForTests {
         return chosen
     }
 
+    private fun sampleTaintedMapGene(rand: Randomness): TaintedMapGene{
+
+        val id = rand.nextInt(0, 10000)
+
+        return TaintedMapGene("tainted array $id", TaintInputName.getTaintName(id))
+    }
 
     private fun sampleTaintedArrayGene(rand: Randomness): TaintedArrayGene {
 
@@ -832,7 +875,7 @@ object GeneSamplerForTests {
         val selection = selectionForArrayTemplate()
         val chosen = samplePrintableTemplate(selection, rand)
 
-        return ArrayGene("rand array ${rand.nextInt()}", chosen)
+        return ArrayGene("rand array ${rand.nextInt()}", chosen, uniqueElements = rand.nextBoolean())
     }
 
     fun sampleBase64StringGene(rand: Randomness): Base64StringGene {

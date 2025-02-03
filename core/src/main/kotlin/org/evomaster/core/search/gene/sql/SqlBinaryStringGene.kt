@@ -1,6 +1,7 @@
 package org.evomaster.core.search.gene.sql
 
 import org.evomaster.client.java.controller.api.dto.database.schema.DatabaseType
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.*
@@ -40,8 +41,8 @@ class SqlBinaryStringGene(
 
     }
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
@@ -68,11 +69,13 @@ class SqlBinaryStringGene(
         }
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is SqlBinaryStringGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
-        binaryArrayGene.copyValueFrom(other.binaryArrayGene)
+        return updateValueOnlyIfValid(
+            {binaryArrayGene.copyValueFrom(other.binaryArrayGene)}, false
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

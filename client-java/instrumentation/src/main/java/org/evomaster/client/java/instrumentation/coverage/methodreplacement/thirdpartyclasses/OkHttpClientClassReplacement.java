@@ -2,15 +2,12 @@ package org.evomaster.client.java.instrumentation.coverage.methodreplacement.thi
 
 
 import org.evomaster.client.java.instrumentation.ExternalServiceInfo;
+import org.evomaster.client.java.instrumentation.coverage.methodreplacement.*;
 import org.evomaster.client.java.instrumentation.shared.PreDefinedSSLInfo;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.Replacement;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.ThirdPartyCast;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.ThirdPartyMethodReplacementClass;
-import org.evomaster.client.java.instrumentation.coverage.methodreplacement.UsageFilter;
 import org.evomaster.client.java.instrumentation.shared.ReplacementCategory;
 import org.evomaster.client.java.instrumentation.shared.ReplacementType;
 import org.evomaster.client.java.instrumentation.staticstate.ExecutionTracer;
-
+import org.evomaster.client.java.instrumentation.staticstate.MethodReplacementPreserveSemantics;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLSocketFactory;
@@ -18,12 +15,12 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.collectExternalServiceInfo;
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.skipHostnameOrIp;
+import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceUtils.collectExternalServiceInfo;
+import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceUtils.skipHostnameOrIp;
 
 public class OkHttpClientClassReplacement extends ThirdPartyMethodReplacementClass {
 
-    private static ThreadLocal<Object> instance = new ThreadLocal<>();
+    private static final ThreadLocal<Object> instance = new ThreadLocal<>();
 
     private static final OkHttpClientClassReplacement singleton = new OkHttpClientClassReplacement();
 
@@ -149,10 +146,23 @@ public class OkHttpClientClassReplacement extends ThirdPartyMethodReplacementCla
 
         Method original = getOriginal(singleton, "okhttpclient_newCall", caller);
 
+        if (MethodReplacementPreserveSemantics.shouldPreserveSemantics) {
+            try{
+                return  original.invoke(caller, request);
+            } catch (IllegalAccessException e){
+                throw new RuntimeException(e);
+            } catch (InvocationTargetException e){
+                throw (Exception) e.getCause();
+            }
+        }
+
         Object replaced = request;
         Object url = request.getClass().getMethod("httpUrl").invoke(request);
         String urlScheme = (String) url.getClass().getMethod("scheme").invoke(url);
         String urlHost = (String) url.getClass().getMethod("host").invoke(url);
+        String method = (String) request.getClass().getMethod("method").invoke(request);
+        Object body = request.getClass().getMethod("body").invoke(request);
+        Object headers = request.getClass().getMethod("headers").invoke(request);
         int urlPort = (int) url.getClass().getMethod("port").invoke(url);
         String urlEncodedPath = (String) url.getClass().getMethod("encodedPath").invoke(url);
 
@@ -160,17 +170,24 @@ public class OkHttpClientClassReplacement extends ThirdPartyMethodReplacementCla
                 && !skipHostnameOrIp(urlHost)
                 && !ExecutionTracer.skipHostname(urlHost)
         ){
+            // To fetch DNS information
+            ExternalServiceUtils.analyzeDnsResolution(urlHost);
+
             ExternalServiceInfo remoteHostInfo = new ExternalServiceInfo(urlScheme, urlHost, urlPort);
             String[] ipAndPort = collectExternalServiceInfo(remoteHostInfo, urlPort);
 
             String replacedUrl = urlScheme+"://"+ipAndPort[0]+":"+ipAndPort[1]+urlEncodedPath;
             Object encodedQuery = url.getClass().getMethod("encodedQuery").invoke(url);
             if (encodedQuery != null && !((String)encodedQuery).isEmpty())
-                replacedUrl = replacedUrl + "?" + (String)encodedQuery;
+                replacedUrl = replacedUrl + "?" + encodedQuery;
 
             ClassLoader loader = ExecutionTracer.getLastCallerClassLoader();
             Object builder = loader.loadClass("com.squareup.okhttp.Request$Builder").newInstance();
             builder = builder.getClass().getMethod("url", String.class).invoke(builder, replacedUrl);
+            builder = builder.getClass().getMethod("method", String.class, loader.loadClass("com.squareup.okhttp.RequestBody"))
+                    .invoke(builder, method, body);
+            builder = builder.getClass().getMethod("headers", loader.loadClass("com.squareup.okhttp.Headers"))
+                    .invoke(builder, headers);
             replaced = builder.getClass().getMethod("build").invoke(builder);
         }
 

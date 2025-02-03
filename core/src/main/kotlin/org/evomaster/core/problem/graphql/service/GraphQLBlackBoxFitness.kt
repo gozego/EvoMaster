@@ -4,8 +4,8 @@ import org.evomaster.client.java.controller.api.dto.AdditionalInfoDto
 import org.evomaster.core.problem.graphql.GraphQLAction
 import org.evomaster.core.problem.graphql.GraphQLIndividual
 import org.evomaster.core.problem.graphql.GraphQlCallResult
-import org.evomaster.core.problem.httpws.service.HttpWsCallResult
-import org.evomaster.core.search.ActionResult
+import org.evomaster.core.problem.httpws.HttpWsCallResult
+import org.evomaster.core.search.action.ActionResult
 import org.evomaster.core.search.EvaluatedIndividual
 import org.evomaster.core.search.FitnessValue
 import org.slf4j.Logger
@@ -18,7 +18,13 @@ class GraphQLBlackBoxFitness : GraphQLFitness() {
         private val log: Logger = LoggerFactory.getLogger(GraphQLBlackBoxFitness::class.java)
     }
 
-    override fun doCalculateCoverage(individual: GraphQLIndividual, targets: Set<Int>): EvaluatedIndividual<GraphQLIndividual>? {
+    override fun doCalculateCoverage(
+        individual: GraphQLIndividual,
+        targets: Set<Int>,
+        allTargets: Boolean,
+        fullyCovered: Boolean,
+        descriptiveIds: Boolean,
+    ): EvaluatedIndividual<GraphQLIndividual>? {
 
         if(config.bbExperiments){
             /*

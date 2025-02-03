@@ -12,9 +12,12 @@ import org.evomaster.core.search.service.mutator.genemutation.SubsetGeneMutation
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.evomaster.core.Lazy
+import org.evomaster.core.problem.enterprise.EnterpriseIndividual
+import org.evomaster.core.problem.enterprise.SampleType
 import org.evomaster.core.search.RootElement
 import org.evomaster.core.search.gene.utils.GeneUtils
 import org.evomaster.core.search.service.SearchGlobalState
+import org.evomaster.core.search.service.monitor.ProcessMonitorExcludeField
 
 
 /**
@@ -105,6 +108,7 @@ abstract class Gene(
      *
      * In other words, this relationship is symmetric, transitive but not reflexive
      */
+    @ProcessMonitorExcludeField
     private val bindingGenes: MutableSet<Gene> = mutableSetOf()
 
     init{
@@ -167,7 +171,7 @@ abstract class Gene(
         if(initialized){
             throw IllegalStateException("Gene already initialized")
         }
-        if(rand != null && isMutable()) {
+        if(rand != null && requiresRandomInitialization()) {
             randomize(rand, false)
         }
         markAllAsInitialized()
@@ -213,7 +217,9 @@ abstract class Gene(
         if(ind.searchGlobalState == null){
             throw IllegalStateException("Search Global State was not setup for the individual")
         }
-        applyGlobalUpdates()
+
+        if (ind !is EnterpriseIndividual || ind.sampleType != SampleType.SEEDED)
+            applyGlobalUpdates()
 
         children.forEach { it.doGlobalInitialize() }
     }
@@ -244,7 +250,8 @@ abstract class Gene(
         if (copy !is Gene)
             throw IllegalStateException("mismatched type: the type should be Gene, but it is ${this::class.java.simpleName}")
         copy.initialized = initialized
-        copy.flatView().forEach{it.initialized = initialized}
+        //this was incorrect, as subchildren might had different init state compared to this
+        //copy.flatView().forEach{it.initialized = initialized}
         return copy
     }
 
@@ -292,13 +299,21 @@ abstract class Gene(
      * Will return [this] if of the specified type, otherwise [null].
      * Wrapper genes, and only those, will override this method to check their children
      */
-    open  fun <T> getWrappedGene(klass: Class<T>) : T?  where T : Gene{
+    @Suppress("BOUNDS_NOT_ALLOWED_IF_BOUNDED_BY_TYPE_PARAMETER")
+    open  fun <T,K> getWrappedGene(klass: Class<K>, strict: Boolean = false) : T?  where T : Gene, T : K{
 
-        if(this.javaClass == klass){
+        if(matchingClass(klass,strict)){
             return this as T
         }
 
         return null
+    }
+
+    protected fun matchingClass(klass: Class<*>, strict: Boolean) : Boolean{
+        if(strict){
+           return this.javaClass == klass
+        }
+        return klass.isAssignableFrom(this.javaClass)
     }
 
     /**
@@ -320,7 +335,7 @@ abstract class Gene(
      *  "Locally" here means that the constraints are based only on the current gene and all its children,
      *  but not genes up in the hierarchy and in other actions.
      *
-     * Note that the method is only used for debugging and testing purposes.
+     * Note that the method is mainly used for debugging and testing purposes.
      *  e.g., for NumberGene, if min and max are specified, the value should be within min..max.
      *        for FloatGene with precision 2, the value 10.222 would not be considered as a valid gene.
      * Sampling a gene at random until is valid could end up in an infinite loop, so should be avoided.
@@ -330,12 +345,22 @@ abstract class Gene(
      *
      * Note that, if a gene is valid, then all of its children must be valid as well, regardless of whether
      * they are having any effect on the phenotype.
-     *
-     * A default implementation could be:
-     *        return getViewOfChildren().all { it.isLocallyValid() }
-     * but here we want to force new genes to explicitly write this method
      */
-    abstract fun isLocallyValid() : Boolean
+    fun isLocallyValid() : Boolean{
+
+        if(!checkForLocallyValidIgnoringChildren()){
+            return false
+        }
+
+        return getViewOfChildren().all { it.isLocallyValid() }
+    }
+
+    /**
+     * Force each gene to implement this method.
+     * This MUST not check its children.
+     */
+    protected abstract fun checkForLocallyValidIgnoringChildren() : Boolean
+
 
     /**
      *  Verify all constraints (including locals).
@@ -351,7 +376,17 @@ abstract class Gene(
         return checkForGloballyValid() && getViewOfChildren().all { it.isGloballyValid() }
     }
 
+    override fun callWinstonWolfe() {
+        super.callWinstonWolfe()
 
+        removeThisFromItsBindingGenes()
+        //TODO in future will deal with FK as well here
+    }
+
+    /**
+     * We don't force each gene to implement this method, as only a few would have
+     * global constraints
+     */
     protected open fun checkForGloballyValid() = true
 
     /**
@@ -388,6 +423,12 @@ abstract class Gene(
      * Typically, it will be true, apart from some special cases.
      */
     open fun isMutable() = true
+
+    /**
+     * When the gene is sampled, check if it should be randomized.
+     * Typically this depends on whether the gene is mutable or not
+     */
+    open fun requiresRandomInitialization() = isMutable()
 
     /**
      * Specify if this gene should be printed in the output test.
@@ -443,7 +484,7 @@ abstract class Gene(
             throw IllegalArgumentException("Trying adaptive weight selection, but with no info as input")
         }
 
-        if(children.none { it.isMutable() }){
+        if(mutablePhenotypeChildren().isEmpty()){
             //no mutable child, so always apply shallow mutate
             return true
         }
@@ -696,7 +737,14 @@ abstract class Gene(
     Note: above, null target format means that no characters are escaped.
      */
 
-    abstract fun copyValueFrom(other: Gene)
+    /**
+     * copy value based on [other]
+     * in some case, the [other] might not satisfy constraints of [this gene],
+     * then copying will not be performed successfully
+     *
+     * @return whether the value is copied based on [other] successfully
+     */
+    abstract fun copyValueFrom(other: Gene): Boolean
 
     /**
      * If this gene represents a variable, then return its name.
@@ -732,7 +780,7 @@ abstract class Gene(
             return listOf()
         }
 
-        return root.seeGenes()
+        return root.seeTopGenes()
     }
 
     /**
@@ -748,6 +796,17 @@ abstract class Gene(
      * evaluate whether [this] and [gene] belong to one evolution during search
      */
     open fun possiblySame(gene : Gene) : Boolean = gene.name == name && gene::class == this::class
+
+
+    /**
+     * Given a string value, apply it to the current state of this gene (and possibly recursively to its children).
+     * If it fails for any reason, return false, without modifying its state.
+     */
+    open fun setFromStringValue(value: String) : Boolean{
+        //TODO in future this should be abstract, to force each gene to handle it.
+        //few implementations can be based on AbstractParser class for Postman
+        throw IllegalStateException("setFromStringValue() is not implemented for gene ${this::class.simpleName}")
+    }
 
 
     //========================= handing binding genes ===================================
@@ -795,10 +854,19 @@ abstract class Gene(
      * because could use bindingGenes directly
      */
     private fun computeTransitiveBindingGenes(all : MutableSet<Gene>){
-        if (bindingGenes.isEmpty()) return
+        val root = getRoot()
+        val allBindingGene = bindingGenes.plus(
+            if (root is Individual) root.seeFullTreeGenes().filter {
+                r-> r != this && r.bindingGenes.contains(this)
+            }
+            else emptyList()
+        )
+        if (allBindingGene.isEmpty()) {
+            return
+        }
         all.add(this) //adding current
 
-        bindingGenes.filterNot { all.contains(it) }
+        allBindingGene.filterNot { all.contains(it) }
                 //all other genes that are bound to this and are NOT in all
                 .forEach { b->
             all.add(b)
@@ -807,7 +875,25 @@ abstract class Gene(
         /*
             TODO if [this] is bound, can any of its children be bound??? likely not
          */
-        children.filterNot { all.contains(it) }.forEach { it.computeTransitiveBindingGenes(all) }
+//        children.filterNot { all.contains(it) }.forEach { it.computeTransitiveBindingGenes(all) }
+    }
+
+    /**
+     * compute transitive BindingGenes of this gene in an individual
+     */
+    private fun computeTransitiveBindingGenes(){
+        val all = mutableSetOf<Gene>()
+        computeTransitiveBindingGenes(all)
+        all.remove(this)
+        resetBinding(all)
+    }
+
+    /**
+     * compute transitive BindingGenes of this gene and composed children genes in an individual
+     */
+    fun computeAllTransitiveBindingGenes(){
+        computeTransitiveBindingGenes()
+        children.forEach(Gene::computeTransitiveBindingGenes)
     }
 
     /**
@@ -821,17 +907,20 @@ abstract class Gene(
      * TODO possibly rename, see next TODO
      */
     fun removeThisFromItsBindingGenes(){
-        val all = mutableSetOf<Gene>()
+//        val all = mutableSetOf<Gene>()
+//
+//        //TODO can we remove a gene that is not in sync? if not, we can look at bindingGenes directly
+//        computeTransitiveBindingGenes(all)
 
-        //TODO can we remove a gene that is not in sync? if not, we can look at bindingGenes directly
-        computeTransitiveBindingGenes(all)
-        all.forEach { b->
+        bindingGenes.forEach { b->
             //FIXME this is a bug, removing to K, but not X and Y, isn'it?
             b.removeBindingGene(this)
         }
         //TODO should we do this???
         //bindingGenes.clear()
     }
+
+
 
     /**
      * @return whether [this] gene is bound with any other gene
@@ -889,6 +978,13 @@ abstract class Gene(
     }
 
     /**
+     * clean bindingGenes
+     */
+    fun cleanBinding(){
+        bindingGenes.clear()
+    }
+
+    /**
      *  A is bound with C
      *  B is bound with C
      *
@@ -939,6 +1035,68 @@ abstract class Gene(
     abstract fun bindValueBasedOn(gene: Gene) : Boolean
 
 
+    /**
+     * here `valid` means that 1) [updateValue] performs correctly, ie, returns true AND 2) isLocallyValid is true
+     *
+     * @param updateValue lambda performs update of value of the gene
+     * @param undoIfUpdateFails represents whether it needs to undo the value update if [undoIfUpdateFails] returns false
+     *
+     * @return if the value is updated with [updateValue]
+     */
+    fun updateValueOnlyIfValid(updateValue: () -> Boolean, undoIfUpdateFails: Boolean) : Boolean{
+        val current = copy()
+        val ok = updateValue()
+        if (!ok && !undoIfUpdateFails) return false
 
+        if (!ok || !isLocallyValid()){
+            val success = copyValueFrom(current)
+            assert(success)
+            return false
+        }
+        return true
+
+    }
+
+    /**
+     * Verify if this gene does have any influence on the phenotype.
+     * If so, any modification in it would have no influence on fitness.
+     * For example, a gene inside a deactivated OptionalGene would have no impact.
+     * Typical, whether it has impact will depend on its ancestors' state.
+     *
+     * Note: such check is only based on _static_ information.
+     * Dynamic information, which would require a test to be executed, are not considered here.
+     * For example, such actions could be skipped if previous one is marked as "stopped".
+     * Their genes would all be having no effect.
+     * But this would not be considered here in this check.
+     */
+    fun staticCheckIfImpactPhenotype() : Boolean{
+
+        if(parent == null || parent !is Gene){
+            //top genes are always impacting, as used directly
+            return true
+        }
+
+        val p = parent as Gene
+
+        if(!p.isChildUsed(this)){
+            //clearly not in use
+            return false
+        }
+
+        return p.staticCheckIfImpactPhenotype()
+    }
+
+    open fun isChildUsed(child: Gene) : Boolean{
+        verifyChild(child)
+        //in most cases, it would be true.
+        //only for few special genes this function would be overridden
+        return true
+    }
+
+    fun verifyChild(child: Gene) {
+        if(! children.contains(child)){
+            throw IllegalArgumentException("Not a child of current gene: $child - $this")
+        }
+    }
 }
 

@@ -71,6 +71,18 @@ class Randomness {
      * Return true with probability P
      */
     fun nextBoolean(p: Double): Boolean {
+        /*
+            Do not call methods of 'random' if already know the answer.
+            Problem example: adding a check on experimental EMConfig probability with default 0.0
+            would otherwise change the sequence of random values, possibly side-effecting
+            not-too-stable E2E tests unrelated to the pushed changes
+         */
+        if(p == 0.0){
+            return false
+        }
+        if(p == 1.0){
+            return true
+        }
         val k = random.nextDouble() < p
         log.trace("nextBoolean(): {}", k)
         return k
@@ -333,7 +345,7 @@ class Randomness {
     }
 
     /**
-     * Choose a value from the [map] based on the associated probabilities.
+     * Choose a key from the [map] based on the associated probabilities.
      * The highest the associated probability, the *more* chances to be selected.
      * If an element [K] is not present in the map, then
      * its probability is 0.
@@ -412,7 +424,10 @@ class Randomness {
 
         val k =  selection.subList(0, n)
 
-        if(log.isTraceEnabled) log.trace("Chosen: {}", k.joinToString(" "))
+        //printing actual values here lead to non-deterministic behavior is toString() is non-deterministic,
+        //which is the typical case for custom objects that do not override it, as output string will have
+        // a @ reference number to the heap
+        log.trace("Chosen {} elements from list", n)
 
         return k
     }
@@ -431,7 +446,7 @@ class Randomness {
 
         val k = selection.subList(0, n).toSet()
 
-        if(log.isTraceEnabled) log.trace("Chosen: {}", k.joinToString(" "))
+        log.trace("Chosen {} elements from set", n)
 
         return k
     }
@@ -457,7 +472,7 @@ class Randomness {
         }
 
         val k = iter.next()
-        log.trace("Chosen: {}", k)
+        log.trace("Chosen index: {}", i)
 
         return k
     }
@@ -466,5 +481,9 @@ class Randomness {
         val k = random.nextInt( 255)
         log.trace("Random IP bit: {}", k)
         return k
+    }
+
+    fun shuffle(list: MutableList<*>) {
+        list.shuffle(random)
     }
 }

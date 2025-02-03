@@ -1,12 +1,15 @@
 package org.evomaster.core.search.impact.impactinfocollection.individual
 
 import org.evomaster.core.EMConfig
+import org.evomaster.core.search.action.Action
 import org.evomaster.core.output.EvaluatedIndividualBuilder.Companion.generateIndividualResults
 import org.evomaster.core.search.*
+import org.evomaster.core.search.action.ActionFilter
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.numeric.IntegerGene
 import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.impact.impactinfocollection.ImpactUtils
+import org.evomaster.core.search.impact.impactinfocollection.ImpactsOfIndividual
 import org.evomaster.core.search.service.Randomness
 import org.evomaster.core.search.service.mutator.EvaluatedMutation
 import org.evomaster.core.search.service.mutator.MutatedGeneSpecification
@@ -26,7 +29,7 @@ class IndividualGeneImpactTest {
         val evi_ind1 = simulatedMutator.getFakeEvaluatedIndividualWithInitialization(initActionSize = 0)
         val addedInit = IndAction.getSeqIndInitAction(templates = arrayOf(2,3), repeat = arrayOf(1,3))
 
-        evi_ind1.initAddedInitializationGenes(addedInit,0)
+        evi_ind1.initAddedSqlInitializationGenes(addedInit,0, ImpactsOfIndividual.SQL_ACTION_KEY, false)
         assertNotNull(evi_ind1.impactInfo)
         assertEquals(2*(1+1) + 3*(3+1), evi_ind1.getInitializationGeneImpact().size)
     }
@@ -38,7 +41,7 @@ class IndividualGeneImpactTest {
         val evi_ind1 = simulatedMutator.getFakeEvaluatedIndividualWithInitialization(initActionSize = 0)
         val addedInit = IndAction.getSeqIndInitAction(templates = arrayOf(2,3), repeat = arrayOf(1,3))
 
-        evi_ind1.initAddedInitializationGenes(addedInit,0)
+        evi_ind1.initAddedSqlInitializationGenes(addedInit,0, ImpactsOfIndividual.SQL_ACTION_KEY, true)
         assertNotNull(evi_ind1.impactInfo)
         assertEquals(5, evi_ind1.getInitializationGeneImpact().size)
     }
@@ -59,7 +62,11 @@ class IndividualGeneImpactTest {
 
         assert(spec.mutatedIndividual != null)
         assert(spec.mutatedGenes.size == 1)
-        val mutatedGeneId = ImpactUtils.generateGeneId(spec.mutatedIndividual!!, spec.mutatedGenes.first().gene!!)
+        val firstMutatedGene = spec.mutatedGenes.first().gene!!
+        val mutatedGeneId = ImpactUtils.generateGeneId(spec.mutatedIndividual!!, firstMutatedGene)
+
+        assertEquals("${System.lineSeparator()}GeneValue:mutated_index2${System.lineSeparator()}|-IndMainAction[index1,index2]${System.lineSeparator()} |-StringGene::index2",
+            ImpactUtils.printGeneToRootAction(firstMutatedGene))
 
         val evaluatedTargets = mutableMapOf<Int, EvaluatedMutation>()
         evaluatedTargets[simulatedMutator.getNewTarget()] = EvaluatedMutation.BETTER_THAN
@@ -93,7 +100,8 @@ class IndividualGeneImpactTest {
                 previous = evi_ind1,
                 mutated = tracked_evi_ind2,
                 mutatedGenes = spec,
-                targetsInfo = evaluatedTargets
+                targetsInfo = evaluatedTargets,
+                config
         )
 
         assert(tracked_evi_ind2.getSizeOfImpact(false) == 2)
@@ -128,6 +136,8 @@ class IndividualGeneImpactTest {
     fun testGeneImpactUpdateByStructureMutator(){
         val simulatedMutator = SimulatedMutator()
 
+        val config = simulatedMutator.config
+
         val evi_ind1 = simulatedMutator.getFakeEvaluatedIndividual()
         evi_ind1.wrapWithTracking(null, 10, mutableListOf(evi_ind1.copy(TraceableElementCopyFilter.WITH_ONLY_EVALUATED_RESULT)))
 
@@ -143,7 +153,7 @@ class IndividualGeneImpactTest {
                 other = evi_ind2.fitness,
                 targetSubset = simulatedMutator.getInitialTargets(),
                 targetInfo = evaluatedTargets,
-                config = EMConfig()
+                config = config
         )
 
         val improvedTarget = evaluatedTargets.filter { it.value == EvaluatedMutation.BETTER_THAN }
@@ -167,7 +177,8 @@ class IndividualGeneImpactTest {
                 previous = evi_ind1,
                 mutated = evi_ind2,
                 mutatedGenes = spec,
-                targetsInfo = evaluatedTargets
+                targetsInfo = evaluatedTargets,
+                simulatedMutator.config
         )
 
         assertEquals(1, tracked_evi_ind2.getSizeOfImpact(false))
@@ -310,11 +321,11 @@ class IndividualGeneImpactTest {
                     children.filterIsInstance<IndInitAction>().map { it.copy() as IndInitAction }.toMutableList())
         }
 
-        override fun seeGenes(filter: GeneFilter): List<out Gene> {
+        override fun seeTopGenes(filter: ActionFilter): List<out Gene> {
            return when(filter){
-               GeneFilter.ONLY_SQL -> seeInitializingActions().flatMap(Action::seeTopGenes)
-               GeneFilter.NO_SQL -> seeAllActions().flatMap(Action::seeTopGenes)
-               GeneFilter.ALL -> seeInitializingActions().plus(seeAllActions()).flatMap(Action::seeTopGenes)
+               ActionFilter.ONLY_SQL -> seeInitializingActions().flatMap(Action::seeTopGenes)
+               ActionFilter.NO_SQL -> seeAllActions().flatMap(Action::seeTopGenes)
+               ActionFilter.ALL -> seeInitializingActions().plus(seeAllActions()).flatMap(Action::seeTopGenes)
                else -> throw IllegalArgumentException("$filter is not supported by ImpactTest Individual")
            }
         }

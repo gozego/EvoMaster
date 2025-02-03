@@ -21,7 +21,7 @@ class CycleObjectGene(name: String) : SimpleGene(name) {
 
     override fun isMutable() = false
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         return true
     }
     override fun copyContent(): Gene = CycleObjectGene(name)
@@ -39,7 +39,9 @@ class CycleObjectGene(name: String) : SimpleGene(name) {
         throw IllegalStateException("CycleObjectGene has no value")
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
+        // do nothing
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

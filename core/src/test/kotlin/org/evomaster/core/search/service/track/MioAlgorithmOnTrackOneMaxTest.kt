@@ -37,6 +37,7 @@ class MioAlgorithmOnTrackOneMaxTest {
                 object : TypeLiteral<MioAlgorithm<OneMaxIndividual>>() {}))
 
         config = injector.getInstance(EMConfig::class.java)
+        config.minimize = false
 
         tracker = injector.getInstance(ArchiveMutationTrackService::class.java)
 
@@ -59,8 +60,8 @@ class MioAlgorithmOnTrackOneMaxTest {
                 "--weightBasedMutationRate",
                 "false",
                 "--stoppingCriterion",
-                "FITNESS_EVALUATIONS",
-                "--maxActionEvaluations",
+                "ACTION_EVALUATIONS",
+                "--maxEvaluations",
                 "10",
                 "--maxLengthOfTraces",
                 "50",
@@ -97,12 +98,12 @@ class MioAlgorithmOnTrackOneMaxTest {
 
         val args = arrayOf(
                 "--stoppingCriterion",
-                "FITNESS_EVALUATIONS",
+                "ACTION_EVALUATIONS",
                 "--enableTrackIndividual",
                 "false",
                 "--enableTrackEvaluatedIndividual",
                 "true",
-                "--maxActionEvaluations",
+                "--maxEvaluations",
                 "10",
                 "--maxLengthOfTraces",
                 "50"
@@ -140,7 +141,7 @@ class MioAlgorithmOnTrackOneMaxTest {
         val maxLengthOfTraces = 5
         val args = arrayOf(
                 "--stoppingCriterion",
-                "FITNESS_EVALUATIONS",
+                "ACTION_EVALUATIONS",
                 "--enableTrackIndividual",
                 "false",
                 "--enableTrackEvaluatedIndividual",
@@ -185,7 +186,7 @@ class MioAlgorithmOnTrackOneMaxTest {
 
         val args = arrayOf(
                 "--stoppingCriterion",
-                "FITNESS_EVALUATIONS",
+                "ACTION_EVALUATIONS",
                 "--enableTrackIndividual",
                 "false",
                 "--enableTrackEvaluatedIndividual",
@@ -223,7 +224,7 @@ class MioAlgorithmOnTrackOneMaxTest {
                 "--weightBasedMutationRate",
                 "false",
                 "--stoppingCriterion",
-                "FITNESS_EVALUATIONS",
+                "ACTION_EVALUATIONS",
                 "--enableTrackIndividual",
                 "false",
                 "--enableTrackEvaluatedIndividual",

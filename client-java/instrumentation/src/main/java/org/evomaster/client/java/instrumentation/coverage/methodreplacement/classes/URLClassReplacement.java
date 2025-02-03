@@ -1,18 +1,14 @@
 package org.evomaster.client.java.instrumentation.coverage.methodreplacement.classes;
 
-import org.evomaster.client.java.instrumentation.ExternalServiceInfo;
-import org.evomaster.client.java.instrumentation.shared.PreDefinedSSLInfo;
+import org.evomaster.client.java.distance.heuristics.DistanceHelper;
 import org.evomaster.client.java.instrumentation.coverage.methodreplacement.*;
-import org.evomaster.client.java.instrumentation.heuristic.Truthness;
+import org.evomaster.client.java.distance.heuristics.Truthness;
 import org.evomaster.client.java.instrumentation.shared.*;
 import org.evomaster.client.java.instrumentation.staticstate.ExecutionTracer;
 import org.evomaster.client.java.utils.SimpleLogger;
 
 import java.net.*;
 import java.util.Objects;
-
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.collectExternalServiceInfo;
-import static org.evomaster.client.java.instrumentation.coverage.methodreplacement.ExternalServiceInfoUtils.skipHostnameOrIp;
 
 public class URLClassReplacement implements MethodReplacementClass {
 
@@ -22,7 +18,7 @@ public class URLClassReplacement implements MethodReplacementClass {
 
     /**
      * This is an experimental implementation, not perfect yet.
-     * */
+     */
 
     @Override
     public Class<?> getTargetClass() {
@@ -30,10 +26,10 @@ public class URLClassReplacement implements MethodReplacementClass {
     }
 
 
-    public static URL consumeInstance(){
+    public static URL consumeInstance() {
 
         URL url = instance.get();
-        if(url == null){
+        if (url == null) {
             //this should never happen, unless bug in instrumentation, or edge case we didn't think of
             throw new IllegalStateException("No instance to consume");
         }
@@ -41,9 +37,9 @@ public class URLClassReplacement implements MethodReplacementClass {
         return url;
     }
 
-    private static void addInstance(URL x){
+    private static void addInstance(URL x) {
         URL url = instance.get();
-        if(url != null){
+        if (url != null) {
             //this should never happen, unless bug in instrumentation, or edge case we didn't think of
             throw new IllegalStateException("Previous instance was not consumed");
         }
@@ -83,11 +79,11 @@ public class URLClassReplacement implements MethodReplacementClass {
         URL url;
 
         if (idTemplate == null) {
-            url =  new java.net.URL(context,s,handler);
+            url = new java.net.URL(context, s, handler);
         } else {
 
             try {
-                URL res = new java.net.URL(context,s,handler);
+                URL res = new java.net.URL(context, s, handler);
                 ExecutionTracer.executedReplacedMethod(idTemplate, ReplacementType.EXCEPTION,
                         new Truthness(1, DistanceHelper.H_NOT_NULL));
                 url = res;
@@ -112,13 +108,9 @@ public class URLClassReplacement implements MethodReplacementClass {
     public static URLConnection openConnection(URL caller) throws java.io.IOException {
         Objects.requireNonNull(caller);
 
-        URL newURL = getReplacedURL(caller);
-        if (newURL!=null)
-            return newURL.openConnection();
+        URL newURL = ExternalServiceUtils.getReplacedURL(caller);
 
-        if (!caller.getProtocol().equals("jar") && !caller.getProtocol().equals("file"))
-            SimpleLogger.uniqueWarn("not handle the protocol with:"+caller.getProtocol());
-        return caller.openConnection();
+        return newURL.openConnection();
     }
 
 
@@ -132,39 +124,8 @@ public class URLClassReplacement implements MethodReplacementClass {
     public static URLConnection openConnection(URL caller, Proxy proxy) throws java.io.IOException {
         Objects.requireNonNull(caller);
 
-        URL newURL = getReplacedURL(caller);
-        if (newURL!=null)
-            return newURL.openConnection(proxy);
+        URL newURL = ExternalServiceUtils.getReplacedURL(caller);
 
-        if (!caller.getProtocol().equals("jar") && !caller.getProtocol().equals("file"))
-            SimpleLogger.uniqueWarn("not handle the protocol with:"+caller.getProtocol());
-        return caller.openConnection(proxy);
-    }
-
-    private static URL getReplacedURL(URL caller) throws java.io.IOException {
-        /*
-          Add the external service hostname to the ExecutionTracer
-          */
-        if ((caller.getProtocol().equals("http") || caller.getProtocol().equals("https"))
-                && !skipHostnameOrIp(caller.getHost())
-                && !ExecutionTracer.skipHostname(caller.getHost()))
-        {
-
-            if (caller.getProtocol().equalsIgnoreCase("https"))
-                PreDefinedSSLInfo.setTrustAllForHttpsURLConnection();
-
-            String protocol = caller.getProtocol();
-            int port = caller.getPort();
-            port = ExternalServiceInfoUtils.inferPort(port, protocol);
-
-            ExternalServiceInfo remoteHostInfo = new ExternalServiceInfo(protocol, caller.getHost(), port);
-            String[] ipAndPort = collectExternalServiceInfo(remoteHostInfo, port);
-
-            // Usage of ports below 1024 require root privileges to run
-            String url = caller.getProtocol()+"://" + ipAndPort[0]+":"+ipAndPort[1] + caller.getPath();
-
-            return new URL(url);
-        }
-        return null;
+        return newURL.openConnection(proxy);
     }
 }

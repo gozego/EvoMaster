@@ -3,7 +3,7 @@ package org.evomaster.e2etests.spring.rpc.examples.numericstring;
 import com.google.inject.Injector;
 import org.evomaster.core.problem.rpc.RPCCallAction;
 import org.evomaster.core.problem.rpc.service.RPCSampler;
-import org.evomaster.core.search.Action;
+import org.evomaster.core.search.action.Action;
 import org.evomaster.core.search.gene.*;
 import org.evomaster.core.search.gene.numeric.BigDecimalGene;
 import org.evomaster.core.search.gene.optional.OptionalGene;
@@ -30,8 +30,8 @@ public class RPCSchemaHandlerTest extends NumericStringTestBase{
                 "--showProgress", "false",
                 "--avoidNonDeterministicLogs", "true",
                 "--sutControllerPort", "" + controllerPort,
-                "--maxActionEvaluations", "" + 5,
-                "--stoppingCriterion", "FITNESS_EVALUATIONS",
+                "--maxEvaluations", "" + 5,
+                "--stoppingCriterion", "ACTION_EVALUATIONS",
                 "--useTimeInFeedbackSampling" , "false"
         ));
 

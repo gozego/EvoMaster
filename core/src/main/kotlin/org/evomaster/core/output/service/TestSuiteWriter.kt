@@ -2,22 +2,32 @@ package org.evomaster.core.output.service
 
 import com.google.inject.Inject
 import org.evomaster.client.java.controller.api.dto.database.operations.InsertionDto
+import org.evomaster.client.java.controller.api.dto.database.operations.MongoInsertionDto
+import org.evomaster.client.java.instrumentation.shared.ExternalServiceSharedUtils
 import org.evomaster.core.EMConfig
 import org.evomaster.core.output.*
-import org.evomaster.core.output.service.TestWriterUtils.Companion.getWireMockVariableName
-import org.evomaster.core.output.service.TestWriterUtils.Companion.handleDefaultStubForAsJavaOrKotlin
-import org.evomaster.core.problem.api.service.ApiWsIndividual
-import org.evomaster.core.problem.external.service.httpws.HttpWsExternalService
-import org.evomaster.core.problem.external.service.httpws.HttpExternalServiceAction
+import org.evomaster.core.output.TestWriterUtils.getWireMockVariableName
+import org.evomaster.core.output.TestWriterUtils.handleDefaultStubForAsJavaOrKotlin
+import org.evomaster.core.output.naming.NumberedTestCaseNamingStrategy
+import org.evomaster.core.output.naming.TestCaseNamingStrategyFactory
+import org.evomaster.core.problem.api.ApiWsIndividual
+import org.evomaster.core.problem.externalservice.httpws.HttpWsExternalService
+import org.evomaster.core.problem.externalservice.httpws.HttpExternalServiceAction
+import org.evomaster.core.problem.externalservice.httpws.service.HttpWsExternalServiceHandler
 import org.evomaster.core.problem.rest.BlackBoxUtils
 import org.evomaster.core.problem.rest.RestIndividual
-import org.evomaster.core.problem.rpc.RPCIndividual
+import org.evomaster.core.remote.service.RemoteController
 import org.evomaster.core.search.Solution
 import org.evomaster.core.search.service.Sampler
 import org.evomaster.core.search.service.SearchTimeController
+import org.evomaster.test.utils.EMTestUtils
+import org.evomaster.test.utils.SeleniumEMUtils
+import org.evomaster.test.utils.js.JsLoader
+import org.evomaster.test.utils.py.PyLoader
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.time.ZonedDateTime
 
@@ -29,18 +39,26 @@ import java.time.ZonedDateTime
 class TestSuiteWriter {
 
     companion object {
+
         const val jsImport = "EM"
 
         /**
          * variable name of Sut handler
          */
         const val controller = "controller"
+        const val driver = "driver"
+
+        private const val pythonUtilsFilenameNoExtension = "em_test_utils"
+        const val pythonUtilsFilename = "$pythonUtilsFilenameNoExtension.py"
+        const val javascriptUtilsFilename = "EMTestUtils.js"
+
+        private val log: Logger = LoggerFactory.getLogger(TestSuiteWriter::class.java)
+
         private const val baseUrlOfSut = "baseUrlOfSut"
         private const val expectationsMasterSwitch = "ems"
         private const val fixtureClass = "ControllerFixture"
         private const val fixture = "_fixture"
-
-        private val log: Logger = LoggerFactory.getLogger(TestSuiteWriter::class.java)
+        private const val browser = "browser"
     }
 
     @Inject
@@ -58,7 +76,14 @@ class TestSuiteWriter {
     @Inject(optional = true)
     private lateinit var sampler: Sampler<*>
 
+    @Inject(optional = true)
+    private lateinit var remoteController: RemoteController
+
+    @Inject
+    private lateinit var externalServiceHandler: HttpWsExternalServiceHandler
+
     private var activePartialOracles = mutableMapOf<String, Boolean>()
+
 
 
     fun writeTests(
@@ -70,7 +95,22 @@ class TestSuiteWriter {
 
         val name = TestSuiteFileName(solution.getFileName())
         val content = convertToCompilableTestCode(solution, name, snapshotTimestamp, controllerName, controllerInput)
-        saveToDisk(content, config, name)
+        saveToDisk(content, getTestSuitePath(name, config))
+    }
+
+    /**
+     * write tests during seeding
+     */
+    fun writeTestsDuringSeeding(solution: Solution<*>,
+                                controllerName: String?,
+                                controllerInput: String?,
+                                snapshotTimestamp: String = ""){
+
+        if (!config.exportTestCasesDuringSeeding || solution.individualsDuringSeeding.isEmpty()) return
+
+        val solutionDuringSeeding = solution.extractSolutionDuringSeeding()
+        writeTests(solutionDuringSeeding, controllerName, controllerInput, snapshotTimestamp)
+
     }
 
 
@@ -82,10 +122,11 @@ class TestSuiteWriter {
         controllerInput: String?
     ): String {
 
-        val lines = Lines()
+        val lines = Lines(config.outputFormat)
         val testSuiteOrganizer = TestSuiteOrganizer()
+        val namingStrategy = TestCaseNamingStrategyFactory(config).create(solution)
 
-        activePartialOracles = partialOracles.activeOracles(solution.individuals)
+       // activePartialOracles = partialOracles.activeOracles(solution.individuals)
 
         header(solution, testSuiteFileName, lines, timestamp, controllerName)
 
@@ -103,37 +144,35 @@ class TestSuiteWriter {
         //catch any sorting problems (see NPE is SortingHelper on Trello)
         val tests = try {
             // TODO skip to sort RPC for the moment
-            if (solution.individuals.any { it.individual is RPCIndividual }) {
-                var counter = 0
-                solution.individuals.map { ind -> TestCase(ind, "test_${counter++}") }
-            } else
-                testSuiteOrganizer.sortTests(solution, config.customNaming)
+                testSuiteOrganizer.sortTests(solution, namingStrategy, config.testCaseSortingStrategy)
         } catch (ex: Exception) {
-            var counter = 0
             log.warn(
                 "A failure has occurred with the test sorting. Reverting to default settings. \n"
                         + "Exception: ${ex.localizedMessage} \n"
                         + "At ${ex.stackTrace.joinToString(separator = " \n -> ")}. "
             )
-            solution.individuals.map { ind -> TestCase(ind, "test_${counter++}") }
+            // fallback to numbered naming strategy upon failure
+            NumberedTestCaseNamingStrategy(solution).getTestCases()
         }
 
+        val testSuitePath = getTestSuitePath(testSuiteFileName, config)
         for (test in tests) {
             lines.addEmpty(2)
 
             // catch writing problems on an individual test case basis
             val testLines = try {
                 if (config.outputFormat.isCsharp())
-                    testCaseWriter.convertToCompilableTestCode(test, "$fixture.$baseUrlOfSut")
+                    testCaseWriter.convertToCompilableTestCode(test, "$fixture.$baseUrlOfSut", testSuitePath)
                 else
-                    testCaseWriter.convertToCompilableTestCode(test, baseUrlOfSut)
+                    testCaseWriter.convertToCompilableTestCode(test, baseUrlOfSut, testSuitePath)
             } catch (ex: Exception) {
                 log.warn(
                     "A failure has occurred in writing test ${test.name}. \n "
                             + "Exception: ${ex.localizedMessage} \n"
                             + "At ${ex.stackTrace.joinToString(separator = " \n -> ")}. "
                 )
-                Lines()
+                assert(false) // in our tests, this should not happen... but should not crash in production
+                Lines(config.outputFormat)
             }
             lines.add(testLines)
         }
@@ -168,9 +207,25 @@ class TestSuiteWriter {
         }
         val all = sampler.extractFkTables(accessedTable)
 
-        if (all.isEmpty()) return "null"
+        //if (all.isEmpty()) return "null"
 
-        val input = all.joinToString(",") { "\"$it\"" }
+        val tableNamesInSchema = remoteController.getCachedSutInfo()?.sqlSchemaDto?.tables?.map { it.name }?.toSet()
+            ?: setOf()
+
+        val missingTables = all.filter { x ->  tableNamesInSchema.none { y -> y.equals(x,true) } }.sorted()
+        if(missingTables.isNotEmpty()){
+            /*
+                Weird case... but actually seen it in familie-ba-sak, regarding table "task", which is in the migration
+                files (V9) but then somehow doesn't show up in the database...
+                TODO should investigate what the heck is happening there
+             */
+            log.warn("Some SQL commands have referred to tables that do not seem to appear in the database schema: " +
+                    "${missingTables.joinToString(", ")}")
+        }
+
+        val input = if(all.isEmpty()) ""
+            else all.filter { x -> tableNamesInSchema.any{y -> y.equals(x,true)} }.sorted().joinToString(",") { "\"$it\"" }
+
         return when {
             config.outputFormat.isJava() -> "Arrays.asList($input)"
             config.outputFormat.isKotlin() -> "listOf($input)"
@@ -181,17 +236,17 @@ class TestSuiteWriter {
 
     private fun saveToDisk(
         testFileContent: String,
-        config: EMConfig,
-        testSuiteFileName: TestSuiteFileName
+        path: Path
     ) {
-
-        val path = Paths.get(config.outputFolder, testSuiteFileName.getAsPath(config.outputFormat))
-
         Files.createDirectories(path.parent)
         Files.deleteIfExists(path)
         Files.createFile(path)
 
         path.toFile().appendText(testFileContent)
+    }
+
+    private fun getTestSuitePath(testSuiteFileName: TestSuiteFileName, config: EMConfig) : Path{
+        return Paths.get(config.outputFolder, testSuiteFileName.getAsPath(config.outputFormat));
     }
 
     private fun removeFromDisk(
@@ -208,7 +263,7 @@ class TestSuiteWriter {
         if (config.outputFormat.isJava()) {
             lines.add(" * <br>")
         } else {
-            lines.add(" * ")
+            lines.addBlockCommentLine(" ")
         }
     }
 
@@ -222,9 +277,9 @@ class TestSuiteWriter {
     }
 
     private fun classDescriptionComment(solution: Solution<*>, lines: Lines, timestamp: String = "") {
-        lines.add("/**")
-        lines.add(
-            " * This file was automatically generated by EvoMaster on ${
+        lines.startCommentBlock()
+        lines.addBlockCommentLine(
+            " This file was automatically generated by EvoMaster on ${
                 escapeDocs(
                     ZonedDateTime.now().toString()
                 )
@@ -233,22 +288,22 @@ class TestSuiteWriter {
         classDescriptionEmptyLine(lines)
 
         if (timestamp != "") {
-            lines.add(" ************************************ WARNING ************************************ ")
-            lines.add(" * This is an snapshot of the generated tests after $timestamp seconds elapsed. *")
-            lines.add(" * The execution of Evomaster has not finished. *")
-            lines.add(" ********************************************************************************* ")
+            lines.addBlockCommentLine(" ************************************ WARNING ************************************ ")
+            lines.addBlockCommentLine(" * This is an snapshot of the generated tests after $timestamp seconds elapsed. *")
+            lines.addBlockCommentLine(" * The execution of Evomaster has not finished. *")
+            lines.addBlockCommentLine(" ********************************************************************************* ")
         }
 
-        lines.add(" * The generated test suite contains ${solution.individuals.size} tests")
+        lines.addBlockCommentLine(" The generated test suite contains ${solution.individuals.size} tests")
         classDescriptionEmptyLine(lines)
-        lines.add(" * Covered targets: ${solution.overall.coveredTargets()}")
+        lines.addBlockCommentLine(" Covered targets: ${solution.overall.coveredTargets()}")
         classDescriptionEmptyLine(lines)
-        lines.add(" * Used time: ${searchTimeController.getElapsedTime()}")
+        lines.addBlockCommentLine(" Used time: ${searchTimeController.getElapsedTime()}")
         classDescriptionEmptyLine(lines)
-        lines.add(" * Needed budget for current results: ${searchTimeController.neededBudget()}")
+        lines.addBlockCommentLine(" Needed budget for current results: ${searchTimeController.neededBudget()}")
         classDescriptionEmptyLine(lines)
-        lines.add(" * ${solution.termination.comment}")
-        lines.add(" */")
+        lines.addBlockCommentLine(" ${solution.termination.comment}")
+        lines.endCommentBlock()
 
     }
 
@@ -296,6 +351,11 @@ class TestSuiteWriter {
 
         val format = config.outputFormat
 
+        if(format.isPython()){
+            lines.add("#!/usr/bin/env python")
+            lines.addEmpty(1)
+        }
+
         if (name.hasPackage() && format.isJavaOrKotlin()) {
             addStatement("package ${name.getPackage()}", lines)
             lines.addEmpty(2)
@@ -320,12 +380,13 @@ class TestSuiteWriter {
         if (format.isJava()) {
             //in Kotlin this should not be imported
             addImport("java.util.Map", lines)
+            addImport("java.util.Arrays", lines)
         }
 
         if (format.isJavaOrKotlin()) {
 
             addImport("java.util.List", lines)
-            addImport("org.evomaster.client.java.controller.api.EMTestUtils.*", lines, true)
+            addImport(EMTestUtils::class.java.name +".*", lines, true)
             addImport("org.evomaster.client.java.controller.SutHandler", lines)
 
             if (useRestAssured()) {
@@ -334,32 +395,39 @@ class TestSuiteWriter {
                 addImport("io.restassured.response.ValidatableResponse", lines)
             }
 
-            if (config.isEnabledExternalServiceMocking() && solution.hasAnyActiveHttpExternalServiceAction()) {
-                if (format.isKotlin()) {
-                    addImport("com.github.tomakehurst.wiremock.client.WireMock.*", lines)
-                } else if (format.isJava()) {
-                    addImport("static com.github.tomakehurst.wiremock.client.WireMock.*", lines)
-                }
+            if (config.isEnabledExternalServiceMocking() && solution.needWireMockServers()) {
+                addImport("com.github.tomakehurst.wiremock.client.WireMock.*", lines, true)
                 addImport("com.github.tomakehurst.wiremock.WireMockServer", lines)
                 addImport("com.github.tomakehurst.wiremock.core.WireMockConfiguration", lines)
                 addImport(
                     "com.github.tomakehurst.wiremock.extension.responsetemplating.ResponseTemplateTransformer",
                     lines
                 )
+            }
+
+            if(config.isEnabledExternalServiceMocking() && solution.needsHostnameReplacement() ){
                 addImport("com.alibaba.dcm.DnsCacheManipulator", lines)
             }
 
 
             if(solution.hasAnySqlAction()) {
-                addImport("org.evomaster.client.java.controller.db.dsl.SqlDsl.sql", lines, true)
+                addImport("org.evomaster.client.java.sql.dsl.SqlDsl.sql", lines, true)
                 addImport("org.evomaster.client.java.controller.api.dto.database.operations.InsertionResultsDto", lines)
                 addImport(InsertionDto::class.qualifiedName!!, lines)
             }
 
+            if(solution.hasAnyMongoAction()) {
+                addImport("org.evomaster.client.java.controller.mongo.dsl.MongoDsl.mongo", lines, true)
+                addImport("org.evomaster.client.java.controller.api.dto.database.operations.MongoInsertionResultsDto", lines)
+                addImport(MongoInsertionDto::class.qualifiedName!!, lines)
+            }
 
-            // TODO: BMR - this is temporarily added as WiP. Should we have a more targeted import (i.e. not import everything?)
             if (config.enableBasicAssertions) {
-                addImport("org.hamcrest.Matchers.*", lines, true)
+
+                if(useHamcrest()) {
+                    addImport("org.hamcrest.Matchers.*", lines, true)
+                }
+
                 //addImport("org.hamcrest.core.AnyOf.anyOf", lines, true)
                 if (useRestAssured()) {
                     addImport("io.restassured.config.JsonConfig", lines)
@@ -372,23 +440,21 @@ class TestSuiteWriter {
                 addImport("org.evomaster.client.java.controller.contentMatchers.SubStringMatcher.*", lines, true)
             }
 
-            if (config.expectationsActive) {
-                addImport(
-                    "org.evomaster.client.java.controller.expect.ExpectationHandler.expectationHandler",
-                    lines,
-                    true
-                )
-                addImport("org.evomaster.client.java.controller.expect.ExpectationHandler", lines)
-
-                if (useRestAssured())
-                    addImport("io.restassured.path.json.JsonPath", lines)
-                addImport("java.util.Arrays", lines)
+            if (config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                addImport("org.testcontainers.containers.BrowserWebDriverContainer", lines)
+                addImport("org.openqa.selenium.chrome.ChromeOptions", lines)
+                addImport("org.openqa.selenium.remote.RemoteWebDriver", lines)
+                addImport(SeleniumEMUtils::class.java.name + ".*", lines, true)
             }
         }
 
         if (format.isJavaScript()) {
             lines.add("const superagent = require(\"superagent\");")
-            lines.add("const $jsImport = require(\"evomaster-client-js\").EMTestUtils;")
+
+            val jsUtils = JsLoader::class.java.getResource("/$javascriptUtilsFilename").readText()
+            saveToDisk(jsUtils, Paths.get(config.outputFolder, javascriptUtilsFilename))
+            lines.add("const $jsImport = require(\"./$javascriptUtilsFilename\");")
+
             if (controllerName != null) {
                 lines.add("const $controllerName = require(\"${config.jsControllerPath}\");")
             }
@@ -409,7 +475,38 @@ class TestSuiteWriter {
             addUsing("EvoMaster.Controller", lines)
         }
 
-        lines.addEmpty(4)
+        if (format.isPython()) {
+            lines.add("import json")
+            lines.add("import unittest")
+            lines.add("import requests")
+            if (config.testTimeout > 0) {
+                //see https://stackoverflow.com/questions/32309683/timeout-decorator-is-it-possible-to-disable-or-make-it-work-on-windows
+                lines.add("import os")
+                lines.add("if os.name == 'nt':")
+                lines.indented {
+                    lines.add("class timeout_decorator:")
+                    lines.indented {
+                        lines.add("@staticmethod")
+                        lines.add("def timeout(*args, **kwargs):")
+                        lines.indented {
+                            lines.add("return lambda f: f # return a no-op decorator")
+                        }
+                    }
+                }
+                lines.add("else:")
+                lines.indented {
+                    lines.add("import timeout_decorator")
+                }
+            }
+            lines.add("from $pythonUtilsFilenameNoExtension import *")
+            val pythonUtils = PyLoader::class.java.getResource("/$pythonUtilsFilename").readText()
+            saveToDisk(pythonUtils, Paths.get(config.outputFolder, pythonUtilsFilename))
+        }
+
+        when {
+            format.isPython() -> lines.addEmpty(2)
+            else -> lines.addEmpty(4)
+        }
 
         classDescriptionComment(solution, lines, timestamp)
 
@@ -423,7 +520,7 @@ class TestSuiteWriter {
             defineFixture(lines, controllerName)
         }
 
-        if (format.isJavaOrKotlin() || format.isCsharp()) {
+        if (format.isJavaOrKotlin() || format.isCsharp() || format.isPython()) {
             defineClass(name, lines)
             lines.addEmpty()
         }
@@ -463,7 +560,7 @@ class TestSuiteWriter {
         solution: Solution<*>
     ) {
 
-        val wireMockServers = getWireMockServerActions(solution)
+        val wireMockServers = getActiveWireMockServers()
 
         val executable = if (controllerInput.isNullOrBlank()) ""
         else "\"$controllerInput\"".replace("\\", "\\\\")
@@ -478,11 +575,20 @@ class TestSuiteWriter {
             } else {
                 lines.add("private static String $baseUrlOfSut = \"${BlackBoxUtils.targetUrl(config, sampler)}\";")
             }
-            if (config.isEnabledExternalServiceMocking()) {
+            if (config.isEnabledExternalServiceMocking() && solution.needWireMockServers()) {
                 wireMockServers
                     .forEach { externalService ->
                         addStatement("private static WireMockServer ${getWireMockVariableName(externalService)}", lines)
                     }
+            }
+            if(config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                lines.add("private static final BrowserWebDriverContainer $browser = new BrowserWebDriverContainer()")
+                lines.indented {
+                    lines.add(".withCapabilities(ChromeOptions())")
+                    lines.add(".withAccessToHost(true)")
+                    lines.append(";")
+                }
+                lines.add("private static RemoteWebDriver $driver;")
             }
         } else if (config.outputFormat.isKotlin()) {
             if (!config.blackBox || config.bbExperiments) {
@@ -493,12 +599,21 @@ class TestSuiteWriter {
             } else {
                 lines.add("private val $baseUrlOfSut = \"${BlackBoxUtils.targetUrl(config, sampler)}\"")
             }
-            if (config.isEnabledExternalServiceMocking()) {
+            if (config.isEnabledExternalServiceMocking() && solution.needWireMockServers()) {
                 wireMockServers
                     .forEach { action ->
                         addStatement("private lateinit var ${getWireMockVariableName(action)}: WireMockServer", lines)
                     }
             }
+            if(config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                lines.add("private val $browser : BrowserWebDriverContainer<*> =  BrowserWebDriverContainer()")
+                lines.indented {
+                    lines.add(".withCapabilities(ChromeOptions())")
+                    lines.add(".withAccessToHost(true)")
+                }
+                lines.add("private lateinit var $driver : RemoteWebDriver")
+            }
+
         } else if (config.outputFormat.isJavaScript()) {
 
             if (!config.blackBox || config.bbExperiments) {
@@ -509,29 +624,33 @@ class TestSuiteWriter {
             }
         } else if (config.outputFormat.isCsharp()) {
             lines.add("private static readonly HttpClient Client = new HttpClient ();")
+        } else if (config.outputFormat.isPython()) {
+            if (config.blackBox) {
+                lines.add("$baseUrlOfSut = \"${BlackBoxUtils.targetUrl(config, sampler)}\"")
+            }
         }
 
         testCaseWriter.addExtraStaticVariables(lines)
 
-        if (config.expectationsActive) {
-            if (config.outputFormat.isJavaOrKotlin()) {
-                //TODO JS and C#
-                if (activePartialOracles.any { it.value }) {
-                    lines.add(
-                        "/** [$expectationsMasterSwitch] - expectations master switch - is the variable that activates/deactivates expectations " +
-                                "individual test cases"
-                    )
-                    lines.add(("* by default, expectations are turned off. The variable needs to be set to [true] to enable expectations"))
-                    lines.add("*/")
-                    if (config.outputFormat.isJava()) {
-                        lines.add("private static boolean $expectationsMasterSwitch = false;")
-                    } else if (config.outputFormat.isKotlin()) {
-                        lines.add("private val $expectationsMasterSwitch = false")
-                    }
-                }
-                partialOracles?.variableDeclaration(lines, config.outputFormat, activePartialOracles)
-            }
-        }
+//        if (config.expectationsActive) {
+//            if (config.outputFormat.isJavaOrKotlin()) {
+//                //TODO JS and C#
+//                if (activePartialOracles.any { it.value }) {
+//                    lines.add(
+//                        "/** [$expectationsMasterSwitch] - expectations master switch - is the variable that activates/deactivates expectations " +
+//                                "individual test cases"
+//                    )
+//                    lines.add(("* by default, expectations are turned off. The variable needs to be set to [true] to enable expectations"))
+//                    lines.add("*/")
+//                    if (config.outputFormat.isJava()) {
+//                        lines.add("private static boolean $expectationsMasterSwitch = false;")
+//                    } else if (config.outputFormat.isKotlin()) {
+//                        lines.add("private val $expectationsMasterSwitch = false")
+//                    }
+//                }
+//                partialOracles?.variableDeclaration(lines, config.outputFormat, activePartialOracles)
+//            }
+//        }
         //Note: ${config.expectationsActive} can be used to get the active setting, but the default
         // for generated code should be false.
     }
@@ -560,11 +679,18 @@ class TestSuiteWriter {
                 when {
                     config.outputFormat.isJavaScript() -> {
                         addStatement("await $controller.setupForGeneratedTest()", lines)
-                        addStatement("baseUrlOfSut = await $controller.startSut()", lines)
+                        addStatement("$baseUrlOfSut = await $controller.startSut()", lines)
                     }
                     config.outputFormat.isJavaOrKotlin() -> {
                         addStatement("$controller.setupForGeneratedTest()", lines)
-                        addStatement("baseUrlOfSut = $controller.startSut()", lines)
+                        addStatement("$baseUrlOfSut = $controller.startSut()", lines)
+                        //registerOrExecuteInitSqlCommands
+                        addStatement("$controller.registerOrExecuteInitSqlCommandsIfNeeded()", lines)
+
+                        if(config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                            val infoDto = remoteController.getCachedSutInfo()!!
+                            addStatement("$baseUrlOfSut = validateAndGetUrlOfStartingPageForDocker($baseUrlOfSut,\"${infoDto.webProblem.urlPathOfStartingPage}\", true)", lines)
+                        }
                         /*
                             now only support white-box
                             TODO remove this later if we do not use test generation with driver
@@ -581,6 +707,19 @@ class TestSuiteWriter {
                 }
             }
 
+            if(config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                if(format.isJavaOrKotlin()){
+                    addStatement("$browser.start()", lines)
+
+                    if(format.isJava()) {
+                        addStatement("$driver = new RemoteWebDriver($browser.seleniumAddress, new ChromeOptions())", lines)
+                    }
+                    if(format.isKotlin()){
+                        addStatement("$driver = RemoteWebDriver($browser.seleniumAddress, ChromeOptions())", lines)
+                    }
+                }
+            }
+
             if (config.problemType == EMConfig.ProblemType.REST || config.problemType == EMConfig.ProblemType.GRAPHQL) {
                 if (format.isJavaOrKotlin()) {
                     addStatement("RestAssured.enableLoggingOfRequestAndResponseIfValidationFails()", lines)
@@ -594,34 +733,33 @@ class TestSuiteWriter {
                         lines.add(".jsonConfig(JsonConfig.jsonConfig().numberReturnType(JsonPathConfig.NumberReturnType.DOUBLE))")
                         lines.add(".redirect(redirectConfig().followRedirects(false))")
                     }
-                    lines.appendSemicolon(config.outputFormat)
+                    lines.appendSemicolon()
                 }
             }
 
-            val wireMockServers = getWireMockServerActions(solution)
-            if (config.isEnabledExternalServiceMocking() && wireMockServers.isNotEmpty()) {
+            val wireMockServers = getActiveWireMockServers()
+            if (config.isEnabledExternalServiceMocking() && wireMockServers.isNotEmpty() && solution.needWireMockServers()) {
                 if (format.isJavaOrKotlin()) {
                     wireMockServers
                         .forEach { externalService ->
                             val address = externalService.getWireMockAddress()
                             val name = getWireMockVariableName(externalService)
 
-//                            addStatement(
-//                                "DnsCacheManipulator.setDnsCache(\"${action.externalService.getRemoteHostName()}\", \"${address}\")",
-//                                lines
-//                            )
-
                             if (format.isJava()) {
-                                lines.add("${name} = new WireMockServer(new WireMockConfiguration()")
+                                lines.add("$name = new WireMockServer(new WireMockConfiguration()")
                             }
 
                             if (format.isKotlin()) {
-                                lines.add("${name} = WireMockServer(WireMockConfiguration()")
+                                lines.add("$name = WireMockServer(WireMockConfiguration()")
                             }
 
                             lines.indented {
                                 lines.add(".bindAddress(\"$address\")")
-                                lines.add(".port(${externalService.getWireMockPort()})")
+                                if (externalService.isHttps()) {
+                                    lines.add(".httpsPort(${externalService.getWireMockPort()})")
+                                } else {
+                                    lines.add(".port(${externalService.getWireMockPort()})")
+                                }
                                 if (format.isJava()) {
                                     addStatement(".extensions(new ResponseTemplateTransformer(false)))", lines)
                                 }
@@ -676,13 +814,18 @@ class TestSuiteWriter {
                         addStatement("$controller.stopSut()", lines)
                         if (format.isJavaOrKotlin()
                             && config.isEnabledExternalServiceMocking()
-                            && solution.hasAnyActiveHttpExternalServiceAction()
                         ) {
-                            getWireMockServerActions(solution)
-                                .forEach { action ->
-                                    addStatement("${getWireMockVariableName(action)}.stop()", lines)
+                            if(solution.needWireMockServers()) {
+                                getActiveWireMockServers().forEach { action ->
+                                        addStatement("${getWireMockVariableName(action)}.stop()", lines)
                                 }
-                            addStatement("DnsCacheManipulator.clearDnsCache()", lines)
+                            }
+                            if(solution.needsHostnameReplacement()) {
+                                addStatement("DnsCacheManipulator.clearDnsCache()", lines)
+                            }
+                        }
+                        if(config.problemType == EMConfig.ProblemType.WEBFRONTEND){
+                            addStatement("$browser.stop()", lines)
                         }
                     }
                 }
@@ -728,15 +871,22 @@ class TestSuiteWriter {
                 }
                 addStatement("$controller.resetStateOfSUT()", lines)
 
-                if (format.isJavaOrKotlin() && config.isEnabledExternalServiceMocking()) {
-                    getWireMockServerActions(solution)
+                if (format.isJavaOrKotlin() && config.isEnabledExternalServiceMocking() && solution.needWireMockServers()) {
+                    getActiveWireMockServers()
                         .forEach { es ->
                             addStatement("${getWireMockVariableName(es)}.resetAll()", lines)
                             // set the default responses for all wm
                             handleDefaultStubForAsJavaOrKotlin(lines, es, format)
-                            lines.appendSemicolon(format)
+                            lines.appendSemicolon()
                         }
                 }
+
+                if (config.enableCustomizedMethodForMockObjectHandling && testCaseWriter is RPCTestCaseWriter){
+                    lines.add((testCaseWriter as RPCTestCaseWriter).resetExternalServicesWithCustomizedMethod())
+                    lines.add((testCaseWriter as RPCTestCaseWriter).resetMockDatabaseObjectWithCustomizedMethod())
+                }
+
+
             } else if (format.isCsharp()) {
                 addStatement("$fixture = fixture", lines)
                 //TODO add resetDatabase
@@ -745,7 +895,7 @@ class TestSuiteWriter {
 
             if (format.isJavaOrKotlin()
                 && config.isEnabledExternalServiceMocking()
-                && solution.hasAnyActiveHttpExternalServiceAction()
+                && solution.needsHostnameReplacement()
             ) {
                 addStatement("DnsCacheManipulator.clearDnsCache()", lines)
             }
@@ -805,6 +955,13 @@ class TestSuiteWriter {
             lines.addEmpty(2)
             lines.add("}")
         }
+
+        if (config.outputFormat.isPython()) {
+            lines.addEmpty(2)
+            lines.add("if __name__ == '__main__':")
+            lines.indent()
+            lines.add("unittest.main()")
+        }
     }
 
     private fun defineClass(name: TestSuiteFileName, lines: Lines) {
@@ -819,10 +976,11 @@ class TestSuiteWriter {
             format.isCsharp() -> lines.append("public ")
         }
 
-        if (!format.isCsharp())
-            lines.append("class ${name.getClassName()} {")
-        else
-            lines.append("class ${name.getClassName()} : IClassFixture<$fixtureClass> {")
+        when {
+            format.isCsharp() -> lines.append("class ${name.getClassName()} : IClassFixture<$fixtureClass> {")
+            format.isPython() -> lines.append("class ${name.getClassName()}(unittest.TestCase):")
+            else -> lines.append("class ${name.getClassName()} {")
+        }
     }
 
     private fun addImport(klass: String, lines: Lines, static: Boolean = false) {
@@ -841,7 +999,7 @@ class TestSuiteWriter {
     }
 
     private fun addStatement(statement: String, lines: Lines) {
-        lines.addStatement(statement,config.outputFormat)
+        lines.addStatement(statement)
     }
 
 
@@ -854,21 +1012,35 @@ class TestSuiteWriter {
     }
 
 
-    private fun useRestAssured() = config.problemType != EMConfig.ProblemType.RPC
+    private fun useRestAssured() = config.problemType == EMConfig.ProblemType.REST || config.problemType == EMConfig.ProblemType.GRAPHQL
+
+    //TODO better check. need to review use in RPC and GraphQL
+    private fun useHamcrest() = config.problemType != EMConfig.ProblemType.WEBFRONTEND
 
     /**
      * Returns a distinct List of [HttpExternalServiceAction] from the given solution
      */
     private fun getWireMockServerActions(solution: Solution<*>): List<HttpWsExternalService> {
-        return solution.individuals.filter { i -> i.individual is RestIndividual }
+        return solution.individuals
+            .map{ it.individual}
+            .filterIsInstance<RestIndividual>()
             .flatMap {
-                it.individual.seeExternalServiceActions()
+                it.seeExternalServiceActions()
                     .filterIsInstance<HttpExternalServiceAction>()
                     .filter { it.active }
                     .map { it.externalService }
                     //.plus( it.fitness.getViewEmployedDefaultWM())
             }
             .distinctBy { it.getSignature() }.toList()
+    }
+
+    private fun getActiveWireMockServers(): List<HttpWsExternalService> {
+        return externalServiceHandler.getExternalServices()
+            .filter { it.value.getIP() != ExternalServiceSharedUtils.DEFAULT_WM_LOCAL_IP }
+            .filter { it.value.isActive() }
+            .map { it.value }
+            .distinctBy { it.getSignature() }
+            .toList()
     }
 
 }

@@ -2,8 +2,8 @@ package org.evomaster.core.output
 
 import org.apache.commons.lang3.StringEscapeUtils
 import org.evomaster.core.Lazy
-import org.evomaster.core.database.DbAction
-import org.evomaster.core.search.EvaluatedDbAction
+import org.evomaster.core.sql.SqlAction
+import org.evomaster.core.search.action.EvaluatedDbAction
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.ObjectGene
 import org.evomaster.core.search.gene.sql.SqlForeignKeyGene
@@ -28,15 +28,15 @@ object SqlWriter {
      * @param skipFailure specifies whether to skip failure tests
      */
     fun handleDbInitialization(
-            format: OutputFormat,
-            dbInitialization: List<EvaluatedDbAction>,
-            lines: Lines,
-            allDbInitialization: List<DbAction> = dbInitialization.map { it.action },
-            groupIndex: String ="",
-            insertionVars: MutableList<Pair<String, String>>,
-            skipFailure: Boolean) {
+        format: OutputFormat,
+        dbInitialization: List<EvaluatedDbAction>,
+        lines: Lines,
+        allDbInitialization: List<SqlAction> = dbInitialization.map { it.sqlAction },
+        groupIndex: String ="",
+        insertionVars: MutableList<Pair<String, String>>,
+        skipFailure: Boolean) {
 
-        if (dbInitialization.isEmpty() || dbInitialization.none { !it.action.representExistingData && (!skipFailure || it.result.getInsertExecutionResult())}) {
+        if (dbInitialization.isEmpty() || dbInitialization.none { !it.sqlAction.representExistingData && (!skipFailure || it.sqlResult.getInsertExecutionResult())}) {
             return
         }
 
@@ -45,14 +45,14 @@ object SqlWriter {
         val previousVar = insertionVars.joinToString(", ") { it.first }
         val previousVarResults = insertionVars.joinToString(", ") { it.second }
         dbInitialization
-                .filter { !it.action.representExistingData && (!skipFailure || it.result.getInsertExecutionResult())}
+                .filter { !it.sqlAction.representExistingData && (!skipFailure || it.sqlResult.getInsertExecutionResult())}
                 .forEachIndexed { index, evaluatedDbAction ->
 
                     lines.add(when {
                         index == 0 && format.isJava() -> "List<InsertionDto> $insertionVar = sql($previousVar)"
                         index == 0 && format.isKotlin() -> "val $insertionVar = sql($previousVar)"
                         else -> ".and()"
-                    } + ".insertInto(\"${evaluatedDbAction.action.table.name}\", ${evaluatedDbAction.action.geInsertionId()}L)")
+                    } + ".insertInto(\"${evaluatedDbAction.sqlAction.table.name}\", ${evaluatedDbAction.sqlAction.geInsertionId()}L)")
 
                     if (index == 0) {
                         lines.indent()
@@ -64,7 +64,7 @@ object SqlWriter {
                                 .forEach { g ->
                                     when {
                                         g is SqlWrapperGene && g.getForeignKey() != null -> {
-                                            val line = handleFK(format, g.getForeignKey()!!, evaluatedDbAction.action, allDbInitialization)
+                                            val line = handleFK(format, g.getForeignKey()!!, evaluatedDbAction.sqlAction, allDbInitialization)
                                             lines.add(line)
                                         }
                                         g is ObjectGene -> {
@@ -84,7 +84,7 @@ object SqlWriter {
                 }
 
         lines.add(".dtos()")
-        lines.appendSemicolon(format)
+        lines.appendSemicolon()
 
         lines.deindent()
 
@@ -93,7 +93,7 @@ object SqlWriter {
             format.isKotlin() -> "val "
             else -> throw IllegalStateException("Not support sql insertions generation for $format")
         } + "$insertionVarResult = controller.execInsertionsIntoDatabase(${if (previousVarResults.isBlank()) insertionVar else "$insertionVar, $previousVarResults"})")
-        lines.appendSemicolon(format)
+        lines.appendSemicolon()
 
         insertionVars.add(insertionVar to insertionVarResult)
 
@@ -118,7 +118,7 @@ object SqlWriter {
         }
     }
 
-    private fun handleFK(format: OutputFormat, fkg: SqlForeignKeyGene, action: DbAction, allActions: List<DbAction>): String {
+    private fun handleFK(format: OutputFormat, fkg: SqlForeignKeyGene, action: SqlAction, allActions: List<SqlAction>): String {
 
 
         /*

@@ -3,7 +3,6 @@ package org.evomaster.core.search.algorithms
 import org.evomaster.core.EMConfig
 import org.evomaster.core.Lazy
 import org.evomaster.core.search.Individual
-import org.evomaster.core.search.Solution
 import org.evomaster.core.search.service.SearchAlgorithm
 
 /**
@@ -31,10 +30,12 @@ class MioAlgorithm<T> : SearchAlgorithm<T>() where T : Individual {
 
                 Lazy.assert { ind.isInitialized() && ind.searchGlobalState!=null }
 
-                ff.calculateCoverage(ind)?.run {
+                ff.calculateCoverage(ind, modifiedSpec = null)?.run {
 
                     archive.addIfNeeded(this)
                     sampler.feedback(this)
+                    if (sampler.isLastSeededIndividual())
+                        archive.archiveCoveredStatisticsBySeededTests()
                 }
 
                 return

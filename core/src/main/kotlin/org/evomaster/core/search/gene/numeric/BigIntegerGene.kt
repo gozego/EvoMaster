@@ -127,12 +127,19 @@ class BigIntegerGene(
         return value.toString()
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is BigIntegerGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
         //BigInteger is immutable, just refer to the value of other gene
+        val current = this.value
         this.value = other.value
+        if (!isLocallyValid()){
+            this.value = current
+            return false
+        }
+
+        return true
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
@@ -185,7 +192,7 @@ class BigIntegerGene(
         value = BigInteger.valueOf(longValue)
     }
 
-    override fun isLocallyValid(): Boolean {
+    override fun checkForLocallyValidIgnoringChildren(): Boolean {
         if (max != null && value > max)
             return false
         if (min != null && value < min)

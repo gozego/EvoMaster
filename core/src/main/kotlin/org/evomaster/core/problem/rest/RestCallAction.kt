@@ -1,17 +1,18 @@
 package org.evomaster.core.problem.rest
 
-import org.evomaster.core.problem.httpws.service.HttpWsAction
-import org.evomaster.core.problem.httpws.service.auth.HttpWsAuthenticationInfo
-import org.evomaster.core.problem.httpws.service.auth.NoAuth
+import org.evomaster.core.problem.httpws.HttpWsAction
+import org.evomaster.core.problem.httpws.auth.HttpWsAuthenticationInfo
+import org.evomaster.core.problem.httpws.auth.HttpWsNoAuth
 import org.evomaster.core.problem.rest.param.BodyParam
 import org.evomaster.core.problem.rest.param.FormParam
-import org.evomaster.core.problem.api.service.param.Param
+import org.evomaster.core.problem.api.param.Param
 import org.evomaster.core.problem.rest.param.PathParam
 import org.evomaster.core.problem.rest.resource.ActionRToken
+import org.evomaster.core.problem.rest.service.AbstractRestSampler
 import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.problem.rest.util.ParserUtil
 import org.evomaster.core.problem.util.BindingBuilder
-import org.evomaster.core.search.Action
+import org.evomaster.core.search.action.Action
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.optional.OptionalGene
 import org.evomaster.core.search.service.Randomness
@@ -20,20 +21,22 @@ import java.net.URLEncoder
 
 class RestCallAction(
     /**
-     * Identifier unique within the individual
-     * **/
+     * An identifier for the type of this action, typically the co-ordinates verb:path.
+     * but, in some special cases, we use this id to mark special type of calls
+     **/
     val id:String,
     val verb: HttpVerb,
     val path: RestPath,
     parameters: MutableList<Param>,
-    auth: HttpWsAuthenticationInfo = NoAuth(),
+    auth: HttpWsAuthenticationInfo = HttpWsNoAuth(),
     /**
      * If true, it means that it will
      * instruct to save the "location" header of the HTTP response for future
      * use by following calls. Typical case is to save the location of
-     * a resource generated with a POST
+     * a resource generated with a POST.
+     * Location might inferred by returned body payload if no location header is present
      */
-    var saveLocation: Boolean = false,
+    saveLocation: Boolean = false,
     /**
      * Specify to use the "location" header of a
      * previous POST as path. As there might be different
@@ -42,13 +45,38 @@ class RestCallAction(
      *
      * Note: it might well be that we save the location returned
      * by a POST, where the POST itself might use a location for
-     * path coming from a previous POST
+     * path coming from a previous POST.
+     *
+     * It is possible that no location header is used, but id of newly created
+     * resource is returned in body payload.
+     * As such, we might use some heuristics to infer the "location"
      */
-    var locationId: String? = null,
+    var usePreviousLocationId: String? = null,
     val produces: List<String> = listOf(),
     val responseRefs : MutableMap<String, String> = mutableMapOf(),
-    val skipOracleChecks : Boolean = false
+    val skipOracleChecks : Boolean = false,
+    /**
+     * unique id defined in the OpenAPI schema. this is optional, though
+     */
+    val operationId: String? = null,
+    val links: List<RestLink> = listOf(),
+    var backwardLinkReference: BackwardLinkReference? = null
 ) : HttpWsAction(auth, parameters) {
+
+    companion object{
+        /**
+         * defining potential verb for creating resources
+         */
+        val CONFIG_POTENTIAL_VERB_FOR_CREATION = listOf(HttpVerb.PUT, HttpVerb.POST)
+    }
+
+    var saveCreatedResourceLocation : Boolean = saveLocation
+        set(value) {
+            if(value && !CONFIG_POTENTIAL_VERB_FOR_CREATION.contains(verb)){
+                throw IllegalArgumentException("Save location can only be used for ${CONFIG_POTENTIAL_VERB_FOR_CREATION.joinToString(",")}")
+            }
+            field = value
+        }
 
     /**
      * collect info of description and summary from swagger
@@ -63,13 +91,28 @@ class RestCallAction(
     val tokens : MutableMap<String, ActionRToken> = mutableMapOf()
 
 
-    override fun shouldCountForFitnessEvaluations(): Boolean = true
+    /**
+     * @return a string representing an id to use when setting "saveLocation".
+     *  following REST call can use such id to refer to the dynamically generated resource.
+     */
+    fun postLocationId() : String {
+        if(!CONFIG_POTENTIAL_VERB_FOR_CREATION.contains(verb)){
+            throw IllegalStateException("Location Ids are meaningful only for POST operations")
+        }
+        return  path.lastElement()
+    }
 
-    fun isLocationChained() = saveLocation || locationId?.isNotBlank() ?: false
+    fun isPotentialActionForCreation() = CONFIG_POTENTIAL_VERB_FOR_CREATION.contains(verb)
+
+    fun isLocationChained() = saveCreatedResourceLocation || usePreviousLocationId?.isNotBlank() ?: false
 
     override fun copyContent(): Action {
         val p = parameters.asSequence().map(Param::copy).toMutableList()
-        return RestCallAction(id, verb, path, p, auth, saveLocation, locationId, produces, responseRefs, skipOracleChecks)
+        return RestCallAction(
+            id, verb, path, p, auth, saveCreatedResourceLocation, usePreviousLocationId,
+            produces, responseRefs, skipOracleChecks, operationId, links,
+            backwardLinkReference?.copy())
+        //note: immutable objects (eg String) do not need to be copied
     }
 
     override fun getName(): String {
@@ -88,24 +131,37 @@ class RestCallAction(
         return path.resolve(parameters)
     }
 
+    fun resolvedOnlyPath() : String{
+        return path.resolveOnlyPath(parameters)
+    }
+
     /**
      * Make sure that the path params are resolved to the same concrete values of "other".
      * Note: "this" can be just an ancestor of "other"
      *
      **/
     fun bindToSamePathResolution(other: RestCallAction) {
-        if (!this.path.isAncestorOf(other.path)) {
+        if (!this.path.isSameOrAncestorOf(other.path)) {
             throw IllegalArgumentException("Cannot bind 2 different unrelated paths to the same path resolution: " +
                     "${this.path} vs ${other.path}")
         }
-        for (i in 0 until parameters.size) {
+        for (i in parameters.indices) {
             val target = parameters[i]
             if (target is PathParam) {
                 val k = other.parameters.find { p -> p is PathParam && p.name == target.name }!!
-                parameters[i].gene.copyValueFrom(k.gene)
+                /*
+                    Note: even if they are referring to same path variable, it does not mean that
+                    necessarily they are represented with the same type of gene, eg., typically a StringGene.
+                    For example, they could be a ChoiceGene when dealing with "examples" or Regex when having patterns
+                    only defined on some endpoints
+                 */
+                parameters[i].primaryGene().copyValueFrom(k.primaryGene())
             }
         }
     }
+
+    fun usingSameResolvedPath(other: RestCallAction) =
+        this.resolvedOnlyPath() == other.resolvedOnlyPath()
 
     /**
     Note: in swagger the "consume" type might be missing.
@@ -198,11 +254,11 @@ class RestCallAction(
     }
 
     /**
-     * reset [saveLocation], [locationId] and [responseRefs] properties of [this] RestCallAction
+     * reset [saveCreatedResourceLocation], [usePreviousLocationId] and [responseRefs] properties of [this] RestCallAction
      */
     fun resetProperties(){
-        saveLocation = false
-        locationId = null
+        saveCreatedResourceLocation = false
+        usePreviousLocationId = null
         resetLocalId()
         seeTopGenes().flatMap { it.flatView() }.forEach { it.resetLocalId() }
         clearRefs()
@@ -221,5 +277,43 @@ class RestCallAction(
     override fun postRandomizedChecks(randomness: Randomness?) {
         // binding params in this action, e.g., path param with body param if there exists
         BindingBuilder.bindParamsInRestAction(this, randomness = randomness)
+    }
+
+    override fun shouldSkipAssertionsOnResponseBody(): Boolean {
+        return id == AbstractRestSampler.CALL_TO_SWAGGER_ID
+    }
+
+    /**
+     * Check if any following action is using any link defined in this action that requires this action's HTTP
+     * response results
+     */
+    fun hasFollowedBackwardLink() : Boolean{
+        return getFollowingMainActions().any{
+            val blr = (it as RestCallAction).backwardLinkReference
+            blr != null
+                    && blr.actualSourceActionLocalId == this.getLocalId()
+                    && (this.links.find { link -> link.id == blr.sourceLinkId }?.needsToUseResponse() ?: false)
+        }
+    }
+
+    fun getReferenceLinkInfo() : Pair<RestLink, RestCallAction> {
+        val blr = backwardLinkReference
+            ?: throw IllegalStateException("No backward link reference is defined for this action")
+        if(!blr.isInUse()){
+            throw IllegalStateException("Backward link reference is not in use")
+        }
+        val previous = getPreviousMainActions().find { it.getLocalId() == backwardLinkReference!!.actualSourceActionLocalId }
+            as RestCallAction?
+            ?: throw IllegalStateException("No previous action with local id ${backwardLinkReference!!.actualSourceActionLocalId}")
+
+        val link = previous.links.find { it.id == blr.sourceLinkId }
+            ?: throw IllegalStateException("No link with id ${blr.sourceLinkId} in action ${previous.id}")
+        return Pair(link, previous)
+    }
+
+
+    fun saveAndLinkLocationTo(other: RestCallAction){
+        this.saveCreatedResourceLocation = true
+        other.usePreviousLocationId = this.postLocationId()
     }
 }

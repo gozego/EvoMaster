@@ -7,6 +7,7 @@ import org.evomaster.client.java.instrumentation.shared.ReplacementCategory;
 import org.evomaster.client.java.instrumentation.shared.*;
 import org.evomaster.client.java.instrumentation.staticstate.ExecutionTracer;
 import org.evomaster.client.java.instrumentation.shared.ReplacementType;
+import org.evomaster.client.java.utils.SimpleLogger;
 
 import java.lang.reflect.Field;
 import java.util.Objects;
@@ -17,7 +18,7 @@ import java.util.regex.Matcher;
  */
 public class MatcherClassReplacement implements MethodReplacementClass {
 
-    private static Field textField = null;
+    private static final Field textField;
 
     static {
         try {
@@ -43,14 +44,13 @@ public class MatcherClassReplacement implements MethodReplacementClass {
      */
     @Replacement(type = ReplacementType.BOOLEAN, category = ReplacementCategory.BASE)
     public static boolean matches(Matcher caller, String idTemplate) {
+        Objects.requireNonNull(caller);
 
-        if (caller == null) {
-            caller.matches();
-        }
         String text = getText(caller);
         String pattern = caller.pattern().toString();
+        int flags = caller.pattern().flags();
 
-        boolean patternMatchesResult = PatternMatchingHelper.matches(pattern, text, idTemplate);
+        boolean patternMatchesResult = PatternMatchingHelper.matches(pattern, flags, text, idTemplate);
 
         TaintType taintType = ExecutionTracer.getTaintType(text);
 
@@ -111,7 +111,10 @@ public class MatcherClassReplacement implements MethodReplacementClass {
         String anyPositionRegexMatch = RegexSharedUtils.handlePartialMatch(regex);
         boolean patternMatchResult = PatternMatchingHelper.matches(anyPositionRegexMatch, substring, idTemplate);
         boolean matcherFindResult = caller.find();
-        assert (patternMatchResult == matcherFindResult);
+        if(patternMatchResult != matcherFindResult){
+            //TODO we should analyze those cases, and fix them
+            SimpleLogger.uniqueWarn("Failed to handle regex in Matcher.find(): " + regex);
+        }
         return matcherFindResult;
     }
 

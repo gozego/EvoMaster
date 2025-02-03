@@ -10,13 +10,18 @@ import org.evomaster.core.remote.service.RemoteController
 import org.evomaster.core.remote.service.RemoteControllerImplementation
 import org.evomaster.core.search.service.Archive
 import org.evomaster.core.search.service.FitnessFunction
+import org.evomaster.core.search.service.Minimizer
 import org.evomaster.core.search.service.Sampler
+import org.evomaster.core.seeding.service.rest.PirToRest
 
 class BlackBoxRestModule(
         val usingRemoteController: Boolean
-): AbstractModule(){
+): RestBaseModule(){
 
     override fun configure() {
+
+        super.configure()
+
         bind(object : TypeLiteral<Sampler<RestIndividual>>() {})
                 .to(RestSampler::class.java)
                 .asEagerSingleton()
@@ -25,18 +30,22 @@ class BlackBoxRestModule(
                 .to(RestSampler::class.java)
                 .asEagerSingleton()
 
+        bind(AbstractRestSampler::class.java)
+                .to(RestSampler::class.java)
+                .asEagerSingleton()
+
         bind(RestSampler::class.java)
                 .asEagerSingleton()
 
         bind(object : TypeLiteral<FitnessFunction<RestIndividual>>() {})
-                .to(BlackBoxRestFitness::class.java)
-                .asEagerSingleton()
+            .to(BlackBoxRestFitness::class.java)
+            .asEagerSingleton()
 
-        bind(object : TypeLiteral<Archive<RestIndividual>>() {})
-                .asEagerSingleton()
+        bind(object : TypeLiteral<FitnessFunction<*>>() {})
+            .to(BlackBoxRestFitness::class.java)
+            .asEagerSingleton()
 
-        bind(object : TypeLiteral<Archive<*>>() {})
-                .to(object : TypeLiteral<Archive<RestIndividual>>() {})
+
 
         if(usingRemoteController) {
             bind(RemoteController::class.java)
@@ -44,11 +53,5 @@ class BlackBoxRestModule(
                     .asEagerSingleton()
         }
 
-        bind(TestCaseWriter::class.java)
-                .to(RestTestCaseWriter::class.java)
-                .asEagerSingleton()
-
-        bind(TestSuiteWriter::class.java)
-                .asEagerSingleton()
     }
 }

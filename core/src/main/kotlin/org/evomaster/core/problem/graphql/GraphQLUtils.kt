@@ -11,6 +11,7 @@ import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.collection.ArrayGene
 import org.evomaster.core.search.gene.collection.EnumGene
 import org.evomaster.core.search.gene.collection.TupleGene
+import org.evomaster.core.search.gene.optional.NullableGene
 import org.evomaster.core.search.gene.optional.OptionalGene
 import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.gene.utils.GeneUtils
@@ -71,15 +72,6 @@ object GraphQLUtils {
                 """.trimIndent()
                         )
 
-                    } else if (returnGene.name.endsWith(GqlConst.UNION_TAG)) {//The first is a union type
-
-                        var query = getQuery(returnGene, a)//todo remove the name for the first union
-                        Entity.json(
-                            """
-                   {"query" : " {  ${a.methodName} ($printableInputGenes)  { $query }  }   ","variables":null}
-                """.trimIndent()
-                        )
-
                     } else {
                         val query = getQuery(returnGene, a)
                         Entity.json(
@@ -96,15 +88,6 @@ object GraphQLUtils {
                         Entity.json(
                             """
                     {"query" : "  { ${a.methodName}  $printableInputGenes         } ","variables":null}
-                """.trimIndent()
-                        )
-
-                    } else if (returnGene.name.endsWith(GqlConst.UNION_TAG)) {//The first is a union type
-
-                        var query = getQuery(returnGene, a)//todo remove the name for the first union
-                        Entity.json(
-                            """
-                   {"query" : " {  ${a.methodName} $printableInputGenes  { $query }  }   ","variables":null}
                 """.trimIndent()
                         )
 
@@ -191,46 +174,56 @@ object GraphQLUtils {
 
     }
 
-    fun getPrintableInputGene(inputGenes: List<Gene>, targetFormat: OutputFormat? = null): MutableList<String> {
+    private fun getPrintableInputGene(inputGenes: List<Gene>, targetFormat: OutputFormat? = null): MutableList<String> {
         val printableInputGene = mutableListOf<String>()
-        for (gene in inputGenes) {
-            if (gene is EnumGene<*> ||
-                (gene is OptionalGene && gene.gene is EnumGene<*>) ||
-                (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is EnumGene<*>) ||
-                (gene is OptionalGene && gene.gene is ArrayGene<*> && gene.gene.template is OptionalGene && gene.gene.template.gene is EnumGene<*>) ||
-                (gene is ArrayGene<*> && gene.template is EnumGene<*>) ||
-                (gene is ArrayGene<*> && gene.template is OptionalGene && gene.template.gene is EnumGene<*>)
-            ) {
-                val i = gene.getValueAsRawString()
-                printableInputGene.add("${gene.name} : $i")
-            } else {
-                if (gene is ObjectGene || (gene is OptionalGene && gene.gene is ObjectGene)) {
-                    val i = gene.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_MODE)
-                    printableInputGene.add(" $i")
-                } else {
-                    if (gene is ArrayGene<*> || (gene is OptionalGene && gene.gene is ArrayGene<*>)) {
-                        val i = gene.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_ARRAY_MODE)
-                        printableInputGene.add("${gene.name} : $i")
-                    } else {
-                        /*
-                            TODO
-                            Man: this is a temporal solution
-                            there might also need a further handling, e.g., field of object is String, Array<String>
-                         */
-                        val mode =
-                            if (ParamUtil.getValueGene(gene) is StringGene) GeneUtils.EscapeMode.GQL_STR_VALUE else GeneUtils.EscapeMode.GQL_INPUT_MODE
 
-                        val i = gene.getValueAsPrintableString(mode = mode, targetFormat = targetFormat)
-                        //if it is optional it should be active
-                        if ((gene.getWrappedGene(OptionalGene::class.java)?.isActive == true)||(gene.getWrappedGene(OptionalGene::class.java) == null))
-                            printableInputGene.add("${gene.name} : $i")
-                    }
-                }
-            }
+        for (gene in inputGenes) {
+            //if it is opt , it should be active
+            //if(gene.getWrappedGene(OptionalGene::class.java)?.isActive != false)
+            if ((gene.getWrappedGene(OptionalGene::class.java)?.isActive == true) || (gene.getWrappedGene(OptionalGene::class.java) == null))
+                printableInputGene.add(inputsPrinting(gene, targetFormat))
+
         }
         return printableInputGene
     }
 
+    /**
+     * This function is used to get printable String.
+     * Initially used for GQL arguments (eg: GQL input parameters, tuple arguments)
+     */
+    fun inputsPrinting(
+        it: Gene,
+        targetFormat: OutputFormat?
+    ) = if (it.getWrappedGene(EnumGene::class.java) != null) {//enum gene
+        val i = it.getValueAsRawString()
+        "${it.name} : $i"
+    } else {
+        if (it.getWrappedGene(ObjectGene::class.java) != null) {//object gene
+            val i = it.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_MODE)
+            //if it is nullable it should be active
+            if (it.getWrappedGene(NullableGene::class.java)?.isActive == true || (it.getWrappedGene(NullableGene::class.java) == null))
+                " $i"
+            else
+            //Need the name of the object when it takes "null" as a value, since it will not access the object
+            //where the name is printed
+                "${it.name} : $i"
+        } else {
+            if (it.getWrappedGene(ArrayGene::class.java) != null) {//array gene
+                val i = it.getValueAsPrintableString(mode = GeneUtils.EscapeMode.GQL_INPUT_ARRAY_MODE)
+                "${it.name} : $i"
+            } else {
+                /*
+                     TODO
+                     Man: this is a temporal solution
+                     there might also need a further handling, e.g., field of object is String, Array<String>
+                         */
+                val mode =
+                    if (ParamUtil.getValueGene(it) is StringGene) GeneUtils.EscapeMode.GQL_STR_VALUE else GeneUtils.EscapeMode.GQL_INPUT_MODE
+                val i = it.getValueAsPrintableString(mode = mode, targetFormat = targetFormat)
+                "${it.name} : $i"
+            }
+        }
+    }
 
     fun repairIndividual(ind: GraphQLIndividual) {
         ind.seeAllActions()
@@ -238,10 +231,10 @@ object GraphQLUtils {
             .forEach { a ->
                 a.parameters.filterIsInstance<GQReturnParam>().forEach { p ->
                     if (p.gene is ObjectGene) {
-                        p.gene.fields.forEach {
-                            if ((it is TupleGene && it.lastElementTreatedSpecially) || (it is BooleanGene) || (it is OptionalGene)) GeneUtils.repairBooleanSelection(
-                                p.gene
-                            )
+                        if (p.gene.fields.any {
+                                (it is TupleGene && it.lastElementTreatedSpecially) || (it is BooleanGene) || (it is OptionalGene)
+                            }) {
+                            GeneUtils.repairBooleanSelection(p.gene)
                         }
                     }
                 }
@@ -534,7 +527,8 @@ object GraphQLUtils {
         adj?.removeAll(cycle)
 
         if (getAdjacent(current, graph).isNullOrEmpty() || adj.isNullOrEmpty()) {
-            paths.add(stack.reversed())//current is a leaf
+            //note JDK 21 added a reversed() method to Deque, which leads to issues...
+            paths.add(stack.toList().reversed())//current is a leaf
             stack.pop() //backtrack
         } else {
             stack.pop() //backtrack
@@ -617,7 +611,7 @@ object GraphQLUtils {
     ) {
         stack.push(current)
         if (isPathTo(stack, end)) {//goal node already reached
-            paths.add(stack.reversed())
+            paths.add(stack.toList().reversed())
         }
         for (adjacent in getAdjacent(current, graph)!!) {
             if (stack.contains(adjacent)) {

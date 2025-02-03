@@ -1,10 +1,12 @@
 package org.evomaster.core.search.gene.collection
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
+import org.evomaster.core.problem.util.ParamUtil
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.interfaces.CollectionGene
-import org.evomaster.core.search.gene.optional.OptionalGene
+import org.evomaster.core.search.gene.interfaces.TaintableGene
 import org.evomaster.core.search.gene.placeholder.CycleObjectGene
 import org.evomaster.core.search.gene.placeholder.LimitObjectGene
 import org.evomaster.core.search.gene.root.CompositeGene
@@ -34,6 +36,12 @@ class ArrayGene<T>(
          * the template (eg ranges for numbers)
          */
         val template: T,
+
+        /**
+         * specify whether the elements should be unique
+         */
+        val uniqueElements : Boolean = false,
+
         /**
          *  How max elements to have in this array. Usually arrays are unbound, till the maximum int size (ie, 2 billion
          *  elements on the JVM). But, for search reasons, too large arrays are impractical
@@ -44,6 +52,7 @@ class ArrayGene<T>(
         var maxSize: Int? = null,
 
         var minSize: Int? = null,
+
         /**
          * The actual elements in the array, based on the template. Ie, usually those elements will be clones
          * of the templated, and then mutated/randomized
@@ -52,9 +61,9 @@ class ArrayGene<T>(
          *
          */
         elements: MutableList<T> = mutableListOf(),
-        private val openingTag : String = "[",
-        private val closingTag : String = "]",
-        private val separatorTag : String = ", "
+        private var openingTag : String = "[",
+        private var closingTag : String = "]",
+        private var separatorTag : String = ", "
 ) : CollectionGene, CompositeGene(name, elements)
         where T : Gene {
 
@@ -86,21 +95,30 @@ class ArrayGene<T>(
         const val MAX_SIZE = 5
     }
 
+    /**
+     * Should only be called when an action is built, and not during mutation, as it
+     * only affect how the gene is going to be represented as a string
+     */
+    fun modifyPrinting(open: String, close: String, sep: String){
+        openingTag = open
+        closingTag = close
+        separatorTag = sep
+    }
 
     fun forceToOnlyEmpty(){
         maxSize = 0
         killAllChildren()
     }
 
-    override fun isLocallyValid() : Boolean{
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
         return elements.size >= (minSize ?: 0) && elements.size <= (maxSize ?: Int.MAX_VALUE)
-                && elements.all { it.isLocallyValid() }
     }
 
     override fun copyContent(): Gene {
         val copy = ArrayGene(
             name,
             template.copy() as T,
+            uniqueElements,
             maxSize,
             minSize,
             elements.map { e -> e.copy() as T }.toMutableList(),
@@ -114,22 +132,33 @@ class ArrayGene<T>(
         return copy
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is ArrayGene<*>) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
 
-        killAllChildren()
-        // check maxSize
-        val elements = (if(maxSize!= null && other.elements.size > maxSize!!) other.elements.subList(0, maxSize!!) else other.elements).map { e -> e.copy() as T }.toMutableList()
-        // build parents for [element]
-        addChildren(elements)
+        if (this.template::class.simpleName != other.template::class.simpleName) return false
+
+        return updateValueOnlyIfValid(
+            {
+                killAllChildren()
+                // check maxSize
+                val elements = (if(maxSize!= null && other.elements.size > maxSize!!)
+                    other.elements.subList(0, maxSize!!) else other.elements).map { e -> e.copy() as T }.toMutableList()
+                // build parents for [element]
+                addChildren(elements)
+                true
+            },
+            false
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
         if (other !is ArrayGene<*>) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
+        if (this.template::class.simpleName != other.template::class.simpleName) return false
+
         return this.elements.zip(other.elements) { thisElem, otherElem ->
             thisElem.containsSameValueAs(otherElem)
         }.all { it }
@@ -158,13 +187,9 @@ class ArrayGene<T>(
         log.trace("Randomizing ArrayGene")
         val n = randomness.nextInt(getMinSizeOrDefault(), getMaxSizeUsedInRandomize())
         repeat(n) {
-            val gene = template.copy() as T
-            if(this.initialized){
-                gene.doInitialize(randomness)
-            } else if(gene.isMutable()) {
-                gene.randomize(randomness, false)
-            }
-            addChild(gene)
+            val gene = createRandomElement(randomness)
+            if (gene != null)
+                addElement(gene)
         }
         assert(minSize==null || (minSize!! <= elements.size))
         assert(maxSize==null || (elements.size <= maxSize!!))
@@ -206,14 +231,11 @@ class ArrayGene<T>(
     override fun shallowMutate(randomness: Randomness, apc: AdaptiveParameterControl, mwc: MutationWeightControl, selectionStrategy: SubsetGeneMutationSelectionStrategy, enableAdaptiveGeneMutation: Boolean, additionalGeneMutationInfo: AdditionalGeneMutationInfo?) : Boolean{
 
         if(elements.size < getMaxSizeOrDefault() && (elements.size == getMinSizeOrDefault() || elements.isEmpty() || randomness.nextBoolean())){
-            val gene = template.copy() as T
-            gene.doInitialize(randomness)
+            val gene = createRandomElement(randomness) ?: return false
             addElement(gene)
         }else{
             log.trace("Removing gene in mutation")
-            val removed = killChildByIndex(randomness.nextInt(elements.size)) as T
-            // remove binding if any other bound with
-            removed.removeThisFromItsBindingGenes()
+            killChildByIndex(randomness.nextInt(elements.size)) as T
         }
         return true
     }
@@ -222,7 +244,7 @@ class ArrayGene<T>(
         return openingTag +
                 elements.map { g ->
                     if (GeneUtils.isGraphQLModes(mode)) {
-                        if (g is EnumGene<*> || (g is OptionalGene && g.gene is EnumGene<*>))
+                        if ((g.getWrappedGene(EnumGene::class.java)!=null))
                             g.getValueAsRawString() else {
                             g.getValueAsPrintableString(previousGenes, mode, targetFormat)
                         }
@@ -252,7 +274,18 @@ class ArrayGene<T>(
         if(gene is ArrayGene<*> && gene.template::class.java.simpleName == template::class.java.simpleName){
             killAllChildren()
             val elements = gene.elements.mapNotNull { it.copy() as? T}.toMutableList()
-            addChildren(elements)
+            elements.forEach { it.resetLocalIdRecursively() }
+            if (!uniqueElements || gene.uniqueElements || !isElementApplicableToUniqueCheck(ParamUtil.getValueGene(template)))
+                addChildren(elements)
+            else{
+                val unique = elements.filterIndexed { index, t ->
+                    index == elements.indexOfLast { l-> ParamUtil.getValueGene(l).containsSameValueAs(ParamUtil.getValueGene(t)) }
+                }
+                Lazy.assert {
+                    unique.isNotEmpty()
+                }
+                addChildren(unique)
+            }
             return true
         }
         LoggingUtil.uniqueWarn(
@@ -269,10 +302,39 @@ class ArrayGene<T>(
         //this is a reference heap check, not based on `equalsTo`
         if (elements.contains(element)){
             killChild(element)
-            element.removeThisFromItsBindingGenes()
         }else{
             log.warn("the specified element (${if (element.isPrintable()) element.getValueAsPrintableString() else "not printable"})) does not exist in this array")
         }
+    }
+
+    private fun createRandomElement(randomness: Randomness) : T? {
+        val gene = template.copy() as T
+        if(this.initialized){
+            gene.doInitialize(randomness)
+        } else if(gene.isMutable()) {
+            gene.randomize(randomness, false)
+        }
+
+        gene.getWrappedGene(TaintableGene::class.java)?.forceNewTaintId()
+
+        if (uniqueElements && doesExist(gene)){
+            gene.randomize(randomness, true)
+        }
+
+        if (uniqueElements && doesExist(gene)){
+            log.warn("tried twice, but still cannot create unique element for the gene")
+            return null
+        }
+
+        return gene
+    }
+
+    /**
+     * @return if the [gene] does exist in [elements]
+     */
+    fun doesExist(gene: T): Boolean{
+        if (!isElementApplicableToUniqueCheck(ParamUtil.getValueGene(gene))) return false
+        return elements.any { ParamUtil.getValueGene(it).containsSameValueAs(ParamUtil.getValueGene(gene)) }
     }
 
     /**
@@ -280,6 +342,9 @@ class ArrayGene<T>(
      */
     fun addElement(element: T){
         checkConstraintsForAdd()
+        if (uniqueElements && doesExist(element))
+            throw IllegalArgumentException("when uniqueElements is true, cannot add element which exists")
+
         addChild(element)
     }
 
@@ -293,6 +358,8 @@ class ArrayGene<T>(
     fun addElement(element: Gene) : Boolean{
         element as? T ?: return false
         checkConstraintsForAdd()
+        if (uniqueElements && doesExist(element))
+            throw IllegalArgumentException("when uniqueElements is true, cannot add element which exists")
         addChild(element)
         return true
     }

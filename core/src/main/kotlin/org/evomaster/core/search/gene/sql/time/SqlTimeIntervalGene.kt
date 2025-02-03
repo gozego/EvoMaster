@@ -1,9 +1,11 @@
 package org.evomaster.core.search.gene.sql.time
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.root.CompositeFixedGene
 import org.evomaster.core.search.gene.Gene
+import org.evomaster.core.search.gene.datetime.FormatForDatesAndTimes
 import org.evomaster.core.search.gene.utils.GeneUtils
 import org.evomaster.core.search.gene.numeric.IntegerGene
 import org.evomaster.core.search.gene.datetime.TimeGene
@@ -18,7 +20,7 @@ class SqlTimeIntervalGene(
     val days: IntegerGene = IntegerGene(name = "days", min = 0),
     val time: TimeGene = TimeGene(
                 "hoursMinutesAndSeconds",
-                timeGeneFormat = TimeGene.TimeGeneFormat.ISO_LOCAL_DATE_FORMAT
+                format = FormatForDatesAndTimes.ISO_LOCAL
         )
 ) : CompositeFixedGene(name, mutableListOf(days, time)) {
 
@@ -32,8 +34,8 @@ class SqlTimeIntervalGene(
             time.copy() as TimeGene
     )
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
@@ -64,12 +66,15 @@ class SqlTimeIntervalGene(
         return "${days.value} days ${time.getValueAsRawString()}"
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is SqlTimeIntervalGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
-        this.days.copyValueFrom(other.days)
-        this.time.copyValueFrom(other.time)
+
+        return updateValueOnlyIfValid(
+            {this.days.copyValueFrom(other.days)
+                    && this.time.copyValueFrom(other.time)}, true
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {

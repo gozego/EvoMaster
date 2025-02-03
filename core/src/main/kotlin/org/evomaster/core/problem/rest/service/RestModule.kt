@@ -1,12 +1,8 @@
 package org.evomaster.core.problem.rest.service
 
-import com.google.inject.AbstractModule
 import com.google.inject.TypeLiteral
-import org.evomaster.core.output.service.RestTestCaseWriter
-import org.evomaster.core.output.service.TestCaseWriter
-import org.evomaster.core.output.service.TestSuiteWriter
-import org.evomaster.core.problem.external.service.httpws.HarvestActualHttpWsResponseHandler
-import org.evomaster.core.problem.external.service.httpws.HttpWsExternalServiceHandler
+import org.evomaster.core.problem.externalservice.httpws.service.HarvestActualHttpWsResponseHandler
+import org.evomaster.core.problem.externalservice.httpws.service.HttpWsExternalServiceHandler
 import org.evomaster.core.problem.rest.RestIndividual
 import org.evomaster.core.remote.service.RemoteController
 import org.evomaster.core.remote.service.RemoteControllerImplementation
@@ -16,13 +12,12 @@ import org.evomaster.core.search.service.mutator.Mutator
 import org.evomaster.core.search.service.mutator.StructureMutator
 
 
-class RestModule(private val bindRemote : Boolean = true) : AbstractModule(){
+class RestModule(private val bindRemote : Boolean = true) : RestBaseModule(){
 
     override fun configure() {
 
-        /*
-            as [ResourceRestModule]
-         */
+        super.configure()
+
         if (bindRemote){
             bind(RemoteController::class.java)
                 .to(RemoteControllerImplementation::class.java)
@@ -37,6 +32,10 @@ class RestModule(private val bindRemote : Boolean = true) : AbstractModule(){
                 .to(RestSampler::class.java)
                 .asEagerSingleton()
 
+        bind(AbstractRestSampler::class.java)
+                .to(RestSampler::class.java)
+                .asEagerSingleton()
+
         bind(RestSampler::class.java)
                 .asEagerSingleton()
 
@@ -44,12 +43,14 @@ class RestModule(private val bindRemote : Boolean = true) : AbstractModule(){
                 .to(RestFitness::class.java)
                 .asEagerSingleton()
 
-        bind(object : TypeLiteral<Archive<RestIndividual>>() {})
+        bind(object : TypeLiteral<AbstractRestFitness>() {})
+            .to(ResourceRestFitness::class.java)
+            .asEagerSingleton()
+
+
+        bind(object : TypeLiteral<FitnessFunction<*>>() {})
+                .to(RestFitness::class.java)
                 .asEagerSingleton()
-
-        bind(object : TypeLiteral<Archive<*>>() {})
-                .to(object : TypeLiteral<Archive<RestIndividual>>() {})
-
 
 
         bind(object : TypeLiteral<Mutator<RestIndividual>>() {})
@@ -60,17 +61,12 @@ class RestModule(private val bindRemote : Boolean = true) : AbstractModule(){
                 .to(RestStructureMutator::class.java)
                 .asEagerSingleton()
 
-        bind(TestCaseWriter::class.java)
-                .to(RestTestCaseWriter::class.java)
-                .asEagerSingleton()
-
-        bind(TestSuiteWriter::class.java)
-                .asEagerSingleton()
 
         bind(HttpWsExternalServiceHandler::class.java)
                 .asEagerSingleton()
 
         bind(HarvestActualHttpWsResponseHandler::class.java)
             .asEagerSingleton()
+
     }
 }

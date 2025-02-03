@@ -1,9 +1,11 @@
 package org.evomaster.core.search
 
 import org.evomaster.core.Lazy
-import org.evomaster.core.problem.api.service.param.Param
+import org.evomaster.core.search.action.ActionComponent
+import org.evomaster.core.problem.api.param.Param
 import org.evomaster.core.search.gene.Gene
 import org.evomaster.core.search.gene.root.CompositeGene
+import org.evomaster.core.search.service.monitor.ProcessMonitorExcludeField
 import org.slf4j.LoggerFactory
 import kotlin.reflect.KClass
 
@@ -32,7 +34,9 @@ abstract class StructuralElement (
     */
 
     protected open val children : MutableList<out StructuralElement> = mutableListOf(),
+   @ProcessMonitorExcludeField
     protected val childTypeVerifier: (Class<*>) -> Boolean = {_ -> true},
+   @ProcessMonitorExcludeField
     private var groups : GroupsOfChildren<StructuralElement>? = null
 ) {
 
@@ -55,7 +59,7 @@ abstract class StructuralElement (
         if (!hasLocalId())
             this.localId = id
         else
-            throw IllegalStateException("cannot re-assign the id of the action, the current id is ${this.localId}")
+            throw IllegalStateException("Cannot re-assign the id of the element with $id. The current id is ${this.localId}")
     }
 
     /**
@@ -84,6 +88,7 @@ abstract class StructuralElement (
      * parent of the element, which contains current the element
      * Note that [parent] can be null when the element is root
      */
+    @ProcessMonitorExcludeField
     var parent : StructuralElement? = null
         private set
 
@@ -220,8 +225,22 @@ abstract class StructuralElement (
         (children as MutableList<StructuralElement>).addAll(position, list)
     }
 
+
+    /**
+     * Subclasses overriding this will need to call super method.
+     *
+     * Make sure that after we kill children, we do not leave a mess (eg dangling cross-tree dependencies)
+     */
+    open fun callWinstonWolfe(){
+        children.forEach{it.callWinstonWolfe()}
+    }
+
     //https://preview.redd.it/hg27vjl7x0241.jpg?auto=webp&s=d3c8b5d2cfbf12a05715271e0cf7f1c26e962827
     open fun killAllChildren(){
+
+        //we are prepared... we call Winston Wolfe before the "mess"...
+        callWinstonWolfe()
+
         children.forEach {
             it.parent = null; //let's avoid memory leaks
         }
@@ -250,6 +269,9 @@ abstract class StructuralElement (
     open fun killChildByIndex(index: Int) : StructuralElement{
         val groupId = groups?.groupForChild(index)?.id
         val child = children.removeAt(index)
+
+        child.callWinstonWolfe()
+
         child.parent = null
         groups?.removedFromGroup(groupId!!)
         return  child
@@ -408,4 +430,10 @@ abstract class StructuralElement (
         return parent!!.getFirstParent(predicate)
     }
 
+    /**
+     * @return the first parent of the given type, or null if none found
+     */
+    fun <T:StructuralElement> getFirstParent(klass: Class<T>) : T? {
+        return getFirstParent { klass.isAssignableFrom(it.javaClass) } as T?
+    }
 }

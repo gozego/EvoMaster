@@ -4,6 +4,7 @@ import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.*
 import org.evomaster.core.search.gene.numeric.IntegerGene
+import org.evomaster.core.search.gene.optional.OptionalGene
 import org.evomaster.core.search.gene.root.CompositeFixedGene
 import org.evomaster.core.search.gene.string.StringGene
 import org.evomaster.core.search.gene.utils.GeneUtils
@@ -27,8 +28,15 @@ class TimeGene(
     val hour: IntegerGene = IntegerGene("hour", 0, MIN_HOUR, MAX_HOUR),
     val minute: IntegerGene = IntegerGene("minute", 0, MIN_MINUTE, MAX_MINUTE),
     val second: IntegerGene = IntegerGene("second", 0, MIN_SECOND, MAX_SECOND),
-    val timeGeneFormat: TimeGeneFormat = TimeGeneFormat.TIME_WITH_MILLISECONDS
-) : Comparable<TimeGene>, CompositeFixedGene(name, listOf(hour, minute, second)) {
+    val format: FormatForDatesAndTimes = FormatForDatesAndTimes.ISO_LOCAL,
+    val onlyValidTimes: Boolean = false, //TODO refactor once dealing with Robustness Testing
+    val millisecond: OptionalGene = OptionalGene("millisecond", IntegerGene("millisecond", 0, 0, 999)),
+    val offset: TimeOffsetGene = TimeOffsetGene("offset")
+) : Comparable<TimeGene>,
+    CompositeFixedGene(name,
+        if(format == FormatForDatesAndTimes.RFC3339) listOf(hour, minute, second, millisecond, offset)
+        else listOf(hour, minute, second)
+    ) {
 
     companion object {
         val log: Logger = LoggerFactory.getLogger(TimeGene::class.java)
@@ -43,19 +51,20 @@ class TimeGene(
             .comparing(TimeGene::hour)
             .thenBy(TimeGene::minute)
             .thenBy(TimeGene::second)
-
+            //TODO ms and offset
+            //FIXME: considering offset, this check is wrong.
     }
 
-    enum class TimeGeneFormat {
-        // format HH:MM:SS
-        ISO_LOCAL_DATE_FORMAT,
-
-        // HH:MM:SS.000Z
-        TIME_WITH_MILLISECONDS
+    fun selectZ(){
+        offset.selectZ()
     }
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    fun useMilliseconds(b: Boolean){
+        millisecond.isActive = b
+    }
+
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     /*
@@ -68,17 +77,25 @@ class TimeGene(
         hour.copy() as IntegerGene,
         minute.copy() as IntegerGene,
         second.copy() as IntegerGene,
-        timeGeneFormat = this.timeGeneFormat
+        format = this.format,
+        onlyValidTimes = this.onlyValidTimes,
+        millisecond = this.millisecond.copy() as OptionalGene,
+        offset = this.offset.copy() as TimeOffsetGene
     )
 
     override fun randomize(randomness: Randomness, tryToForceNewValue: Boolean) {
-
-        hour.randomize(randomness, tryToForceNewValue)
-        minute.randomize(randomness, tryToForceNewValue)
-        second.randomize(randomness, tryToForceNewValue)
+        do {
+            hour.randomize(randomness, tryToForceNewValue)
+            minute.randomize(randomness, tryToForceNewValue)
+            second.randomize(randomness, tryToForceNewValue)
+            millisecond.randomize(randomness, tryToForceNewValue)
+            offset.randomize(randomness, tryToForceNewValue)
+        } while (onlyValidTimes && !isValidTime())
     }
 
-
+    fun isValidTime()= hour.value in 0..23
+            && minute.value in 0..59
+            && second.value in 0..59
 
     override fun adaptiveSelectSubsetToMutate(
         randomness: Randomness,
@@ -90,7 +107,10 @@ class TimeGene(
             val maps = mapOf<Gene, GeneImpact>(
                 hour to additionalGeneMutationInfo.impact.hourGeneImpact,
                 minute to additionalGeneMutationInfo.impact.minuteGeneImpact,
-                second to additionalGeneMutationInfo.impact.secondGeneImpact
+                second to additionalGeneMutationInfo.impact.secondGeneImpact,
+                //TODO should be handle in a correct way
+                millisecond to additionalGeneMutationInfo.impact.millisecondGeneImpact,
+                offset to additionalGeneMutationInfo.impact.offsetGeneImpact
             )
             return mwc.selectSubGene(
                 internalGenes,
@@ -115,37 +135,39 @@ class TimeGene(
     }
 
     override fun getValueAsRawString(): String {
-        return when (timeGeneFormat) {
-            TimeGeneFormat.ISO_LOCAL_DATE_FORMAT -> {
-                GeneUtils.let {
-                    "${GeneUtils.padded(hour.value, 2)}:${
-                        GeneUtils.padded(
-                            minute.value,
-                            2
-                        )
-                    }:${GeneUtils.padded(second.value, 2)}"
-                }
-            }
-            TimeGeneFormat.TIME_WITH_MILLISECONDS -> {
-                GeneUtils.let {
-                    "${GeneUtils.padded(hour.value, 2)}:${
-                        GeneUtils.padded(
-                            minute.value,
-                            2
-                        )
-                    }:${GeneUtils.padded(second.value, 2)}.000Z"
-                }
-            }
+
+        val h = GeneUtils.padded(hour.value, 2)
+        val m = GeneUtils.padded(minute.value, 2)
+        val s = GeneUtils.padded(second.value, 2)
+        val ms = if(millisecond.isActive) {
+            val x = (millisecond.gene as IntegerGene).value
+            val padded = GeneUtils.padded(x,3)
+            ".$padded"
+        } else {
+            ""
+        }
+        val offset = offset.getValueAsRawString()
+
+        return when (format) {
+            FormatForDatesAndTimes.ISO_LOCAL,
+            FormatForDatesAndTimes.DATETIME -> "$h:$m:$s"
+            FormatForDatesAndTimes.RFC3339 -> "$h:$m:$s${ms}${offset}"
         }
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is TimeGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
-        this.hour.copyValueFrom(other.hour)
-        this.minute.copyValueFrom(other.minute)
-        this.second.copyValueFrom(other.second)
+
+        return updateValueOnlyIfValid(
+            {this.hour.copyValueFrom(other.hour)
+                    && this.minute.copyValueFrom(other.minute)
+                    && this.second.copyValueFrom(other.second)
+                    && this.millisecond.copyValueFrom(other.millisecond)
+                    && this.offset.copyValueFrom(other.offset)
+            }, true
+        )
     }
 
     override fun containsSameValueAs(other: Gene): Boolean {
@@ -155,6 +177,8 @@ class TimeGene(
         return this.hour.containsSameValueAs(other.hour)
                 && this.minute.containsSameValueAs(other.minute)
                 && this.second.containsSameValueAs(other.second)
+                && this.millisecond.containsSameValueAs(other.millisecond)
+                && this.offset.containsSameValueAs(other.offset)
     }
 
 
@@ -232,6 +256,10 @@ class TimeGene(
         additionalGeneMutationInfo: AdditionalGeneMutationInfo?
     ): Boolean {
         return false
+    }
+
+    override fun mutationCheck(): Boolean {
+        return !onlyValidTimes || isValidTime()
     }
 
 }

@@ -1,5 +1,6 @@
 package org.evomaster.core.search.gene.datetime
 
+import org.evomaster.core.Lazy
 import org.evomaster.core.logging.LoggingUtil
 import org.evomaster.core.output.OutputFormat
 import org.evomaster.core.search.gene.*
@@ -17,6 +18,7 @@ import org.evomaster.core.search.service.mutator.genemutation.SubsetGeneMutation
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 
@@ -33,7 +35,7 @@ class DateGene(
     val month: IntegerGene = IntegerGene("month", 3, MIN_MONTH, MAX_MONTH),
     val day: IntegerGene = IntegerGene("day", 12, MIN_DAY, MAX_DAY),
     val onlyValidDates: Boolean = false, //TODO refactor once dealing with Robustness Testing
-    val dateGeneFormat: DateGeneFormat = DateGeneFormat.ISO_LOCAL_DATE_FORMAT
+    val format: FormatForDatesAndTimes = FormatForDatesAndTimes.ISO_LOCAL
 ) : ComparableGene, CompositeFixedGene(name, listOf(year, month, day)) {
 
     companion object {
@@ -51,12 +53,9 @@ class DateGene(
 
     }
 
-    enum class DateGeneFormat {
-        ISO_LOCAL_DATE_FORMAT
-    }
 
-    override fun isLocallyValid() : Boolean{
-        return getViewOfChildren().all { it.isLocallyValid() }
+    override fun checkForLocallyValidIgnoringChildren() : Boolean{
+        return true
     }
 
     override fun copyContent(): Gene = DateGene(
@@ -64,7 +63,7 @@ class DateGene(
         year.copy() as IntegerGene,
         month.copy() as IntegerGene,
         day.copy() as IntegerGene,
-        dateGeneFormat = this.dateGeneFormat,
+        format = this.format,
         onlyValidDates = this.onlyValidDates
     )
 
@@ -113,23 +112,23 @@ class DateGene(
         targetFormat: OutputFormat?,
         extraCheck: Boolean
     ): String {
-        return "\"${getValueAsRawString()}\""
-    }
-
-    override fun getValueAsRawString(): String {
-        return when (dateGeneFormat) {
-            DateGeneFormat.ISO_LOCAL_DATE_FORMAT -> GeneUtils.let {
-                "${GeneUtils.padded(year.value, 4)}-${GeneUtils.padded(month.value, 2)}-${
-                    GeneUtils.padded(
-                        day.value,
-                        2
-                    )
-                }"
-            }
+        return if (mode == GeneUtils.EscapeMode.EJSON) {
+            val millis = LocalDate.of(year.value, month.value, day.value).atStartOfDay().atZone(ZoneId.systemDefault())
+                .toInstant().toEpochMilli()
+            "{\"\$date\":{\"\$numberLong\":\"$millis\"}}"
+        } else {
+            "\"${getValueAsRawString()}\""
         }
     }
 
-    override fun copyValueFrom(other: Gene) {
+    override fun getValueAsRawString(): String {
+        return when (format) {
+             FormatForDatesAndTimes.ISO_LOCAL, FormatForDatesAndTimes.DATETIME, FormatForDatesAndTimes.RFC3339->
+                "${GeneUtils.padded(year.value, 4)}-${GeneUtils.padded(month.value, 2)}-${GeneUtils.padded(day.value, 2)}"
+        }
+    }
+
+    override fun copyValueFrom(other: Gene): Boolean {
         if (other !is DateGene) {
             throw IllegalArgumentException("Invalid gene type ${other.javaClass}")
         }
@@ -140,9 +139,10 @@ class DateGene(
                 )
             )
         }
-        this.year.copyValueFrom(other.year)
-        this.month.copyValueFrom(other.month)
-        this.day.copyValueFrom(other.day)
+
+        return updateValueOnlyIfValid(
+            {this.year.copyValueFrom(other.year) && this.month.copyValueFrom(other.month) && this.day.copyValueFrom(other.day)}, true
+        )
     }
 
     /**

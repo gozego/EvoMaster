@@ -2,7 +2,7 @@ package org.evomaster.core.problem.rest.seeding.postman
 
 import com.google.gson.Gson
 import io.swagger.v3.oas.models.OpenAPI
-import org.evomaster.core.problem.api.service.param.Param
+import org.evomaster.core.problem.api.param.Param
 import org.evomaster.core.problem.rest.RestCallAction
 import org.evomaster.core.problem.rest.param.*
 import org.evomaster.core.problem.rest.seeding.AbstractParser
@@ -17,6 +17,7 @@ import java.lang.IllegalStateException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
+@Deprecated("Code here will be replaced with intermediate representation. See new 'seeding' package")
 class PostmanParser(
         defaultRestCallActions: List<RestCallAction>,
         swagger: OpenAPI
